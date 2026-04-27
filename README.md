@@ -21,9 +21,7 @@ access to EXT metadata and content through a Go-native API:
   journal inspection, and integrity helpers
 - Tracks parity with the TSK EXT parser in [PARITY_TSK.md](PARITY_TSK.md)
 
-## Why libntfs
-
-libext does not depend on libntfs. The comparison is about API shape.
+## Why libext
 
 The package uses a `Volume`/`File` style API because that model is practical for
 filesystem inspection tools:
