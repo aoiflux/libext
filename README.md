@@ -163,6 +163,17 @@ Feature, xattr, journal, and integrity helpers:
 - `(*FS).CheckRequiredFeatures() error`
 - `(*FS).CheckOptionalFeatures() []string`
 - `(*FS).DescribeFeatures() string`
+- `(*FS).Report(name string) (EXTReport, error)`
+- `(*FS).ReportDeep(name string) (EXTReport, error)`
+- `(*FS).ReportWithOptions(name string, opts ReportOptions) (EXTReport, error)`
+- `(*FS).WriteReport(name string, w io.Writer) error`
+- `(*FS).WriteReportDeep(name string, w io.Writer) error`
+- `(*FS).WriteReportWithOptions(name string, opts ReportOptions, w io.Writer) error`
+- `(EXTReport).Summary() EXTReportSummary`
+- `(EXTReport).FilterFiles(func(EXTFile) bool) []EXTFile`
+- `(EXTReport).FilesByType(t string) []EXTFile`
+- `(EXTReport).DeletedFiles() []EXTFile`
+- `(EXTReport).FragmentedFiles() []EXTFile`
 - `(*FS).GetXAttrs(inodeNum uint32) (XAttrList, error)`
 - `(*FS).GetInlineXAttrs(inode *Inode) (XAttrList, error)`
 - `(*FS).DescribeJournalStatus() (string, error)`
@@ -203,6 +214,33 @@ _ = f
 The library also wraps some errors with additional context, such as the inode or
 path involved in the failure.
 
+## Report Consumption
+
+Use struct-based report APIs when you want to process data in memory instead of
+writing JSON.
+
+```go
+report, err := vol.ReportDeep("ext-report")
+if err != nil {
+	log.Fatal(err)
+}
+
+summary := report.Summary()
+fmt.Printf("total=%d deleted=%d fragmented=%d\n",
+	summary.Total,
+	summary.Deleted,
+	summary.Fragmented,
+)
+
+regular := report.FilesByType("file")
+largeDeleted := report.FilterFiles(func(f libext.EXTFile) bool {
+	return f.IsDeleted && f.Size > 1<<20
+})
+
+_ = regular
+_ = largeDeleted
+```
+
 ## Platform Notes
 
 - The library is pure Go and does not require cgo.
@@ -222,11 +260,18 @@ The repository includes runnable examples:
 - `go run ./examples/basic <filesystem_image>`
 - `go run ./examples/traverse <filesystem_image> <start_path>`
 - `go run ./examples/extract <filesystem_image> <file_path> <output_path>`
+- `go run ./examples/report <filesystem_image> <output_json> <standard|deep>`
+- `go run ./examples/report_struct <filesystem_image> <standard|deep>`
 - `go run ./examples/journal <filesystem_image>`
 - `go run ./examples/xattr <filesystem_image> [path]`
 
 They cover opening an image, walking directories, extracting file contents,
-inspecting the journal, and reading extended attributes.
+inspecting the journal, generating filesystem reports, and reading extended
+attributes.
+
+For report usage, `examples/report` demonstrates JSON output, while
+`examples/report_struct` demonstrates direct struct consumption with summary and
+filtering logic.
 
 ## Performance Notes
 
