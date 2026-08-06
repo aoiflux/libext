@@ -271,8 +271,13 @@ func (fs *FS) hasCircularRef(inodeNum uint32, visited map[uint32]bool, depth int
 	return false, nil
 }
 
-// ScanForOrphanedInodes identifies inodes with link count > 0 but no directory references.
-// This is a basic orphan detection (not comprehensive).
+// ScanForOrphanedInodes identifies inodes with link count > 0 but no directory
+// references.
+//
+// Deprecated: this function has never returned results — it walks the inode
+// table but never records a candidate, so it always returns nil. It is retained
+// only for source compatibility. Use the deleted-inode enumeration API instead
+// once available.
 func (fs *FS) ScanForOrphanedInodes(maxInodesToCheck int) []uint32 {
 	var orphans []uint32
 

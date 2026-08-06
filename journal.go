@@ -24,9 +24,13 @@ type JournalSuperblock struct {
 
 // JournalTransaction represents a single transaction in the journal.
 type JournalTransaction struct {
-	Sequence    uint32
-	StartBlock  uint32
-	Type        string
+	Sequence   uint32
+	StartBlock uint32
+	Type       string
+
+	// Timestamp is the transaction commit time. It is currently always zero:
+	// the value lives in the commit block header, which this version does not
+	// parse. Check IsZero before using it.
 	Timestamp   time.Time
 	IsCommitted bool
 	BlockCount  uint32
@@ -116,11 +120,14 @@ func (fs *FS) ListJournalTransactions() ([]JournalTransaction, error) {
 		if magic == journalMagic {
 			switch blockType {
 			case JournalBlockTypeDescriptor:
+				// Timestamp is deliberately left zero. A transaction's real time
+				// is h_commit_sec in the matching commit block; stamping the
+				// wall clock here fabricates a forensic artifact that looks
+				// authoritative. Populated once commit blocks are parsed.
 				transactions = append(transactions, JournalTransaction{
 					Sequence:   sequence,
 					StartBlock: uint32(offset / blockSize),
 					Type:       "descriptor",
-					Timestamp:  time.Now(),
 				})
 
 			case JournalBlockTypeCommit:

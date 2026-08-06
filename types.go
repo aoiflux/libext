@@ -6,6 +6,11 @@ const (
 	superblockOffset = 1024
 	superblockSize   = 1024
 	extMagic         = 0xEF53
+
+	// maxBlockGroups bounds the group count derived from superblock geometry.
+	// 2^24 groups is roughly 2 PB at a 4 KiB block size with 32768 blocks per
+	// group; anything larger indicates a corrupt or crafted superblock.
+	maxBlockGroups = 1 << 24
 )
 
 type FSKind string
@@ -40,6 +45,7 @@ const (
 	featureIncompatFileType = 0x0002
 	featureIncompatExtents  = 0x0040
 	featureIncompat64Bit    = 0x0080
+	featureIncompatCSumSeed = 0x2000
 
 	featureRoCompatSparseSuper = 0x0001
 	featureRoCompatGDTChecksum = 0x0010

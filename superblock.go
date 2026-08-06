@@ -79,11 +79,28 @@ func (fs *FS) loadSuperblock() error {
 		sb.GroupDescSize = sb.DescSize
 	}
 
+	// Geometry must be validated before the group count is derived from it.
+	// FirstDataBlock > BlocksCount underflows the subtraction below, yielding a
+	// group count near 2^32 and an allocation of hundreds of gigabytes in
+	// loadGroupDescriptors.
+	if sb.BlocksCount == 0 {
+		return fmt.Errorf("%w: zero block count", ErrInvalidSuperblock)
+	}
+	if uint64(sb.FirstDataBlock) >= sb.BlocksCount {
+		return fmt.Errorf("%w: first data block %d beyond block count %d",
+			ErrInvalidSuperblock, sb.FirstDataBlock, sb.BlocksCount)
+	}
+
 	dataBlocks := sb.BlocksCount - uint64(sb.FirstDataBlock)
-	sb.GroupsCount = uint32((dataBlocks + uint64(sb.BlocksPerGroup) - 1) / uint64(sb.BlocksPerGroup))
-	if sb.GroupsCount == 0 {
+	groups := (dataBlocks + uint64(sb.BlocksPerGroup) - 1) / uint64(sb.BlocksPerGroup)
+	if groups == 0 {
 		return fmt.Errorf("%w: no groups", ErrInvalidSuperblock)
 	}
+	if groups > maxBlockGroups {
+		return fmt.Errorf("%w: %d block groups exceeds limit %d",
+			ErrInvalidSuperblock, groups, maxBlockGroups)
+	}
+	sb.GroupsCount = uint32(groups)
 
 	if sb.BlockSize == 1024 {
 		sb.GroupDescTableOff = 2 * 1024
@@ -92,11 +109,25 @@ func (fs *FS) loadSuperblock() error {
 	}
 
 	fs.sb = sb
-	// Note: Checksum validation is optional and non-fatal.
-	// Many real-world filesystems have incorrect/missing checksums due to tools
-	// that don't properly maintain them. Checksum functions remain available
-	// for diagnostic purposes via fs.verifySuperblockChecksum() if needed.
-	_ = fs.verifySuperblockChecksum(buf) // diagnostic only, don't fail on mismatch
+
+	// Checksum validation is diagnostic by default: many real-world images carry
+	// stale checksums written by tools that do not maintain them. Set
+	// Options.VerifyChecksums to make a mismatch fatal.
+	if err := fs.verifySuperblockChecksum(buf); err != nil {
+		if fs.opts.VerifyChecksums {
+			return err
+		}
+		fs.warn(WarnChecksumMismatch, "", err.Error())
+	}
+
+	if fs.imageSize > 0 {
+		if want := sb.BlocksCount * uint64(sb.BlockSize); want > fs.imageSize {
+			fs.warn(WarnTruncatedImage, "", fmt.Sprintf(
+				"superblock describes %d bytes but the reader holds %d; reads past the end will fail",
+				want, fs.imageSize))
+		}
+	}
+
 	fs.kind = detectFSKind(sb)
 	return nil
 }

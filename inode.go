@@ -21,8 +21,14 @@ func (fs *FS) ReadInode(inodeNum uint32) (Inode, error) {
 	if err := fs.readAt(off, raw); err != nil {
 		return Inode{}, fmt.Errorf("read inode %d: %w", inodeNum, err)
 	}
-	// Inode checksum validation is optional and non-fatal
-	_ = fs.verifyInodeChecksum(inodeNum, raw) // diagnostic only, don't fail on mismatch
+	// Checksum validation is diagnostic unless Options.VerifyChecksums is set:
+	// stale checksums are common in images written by tools that do not
+	// maintain them, and refusing to read those would be worse than reporting.
+	if err := fs.verifyInodeChecksum(inodeNum, raw); err != nil {
+		if fs.opts.VerifyChecksums {
+			return Inode{}, err
+		}
+	}
 	return parseInode(raw, inodeNum), nil
 }
 

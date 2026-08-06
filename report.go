@@ -147,9 +147,14 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 				continue
 			}
 
+			// A deep scan walks unallocated inode table entries, which hold
+			// whatever was there before. One unreadable block map must not
+			// discard the report; the entry is kept with no fragments.
 			fragments, err := fs.inodeFragments(inode)
 			if err != nil {
-				return EXTReport{}, fmt.Errorf("build fragments for inode %d: %w", inodeNum, err)
+				fs.warn(WarnDegradedRead, "", fmt.Sprintf(
+					"inode %d block map is unreadable (%v); reported without fragments", inodeNum, err))
+				fragments = nil
 			}
 
 			name := paths[inodeNum]
@@ -176,7 +181,9 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 
 		fragments, err := fs.inodeFragments(inode)
 		if err != nil {
-			return fmt.Errorf("build fragments for %s: %w", p, err)
+			fs.warn(WarnDegradedRead, "", fmt.Sprintf(
+				"block map for %s is unreadable (%v); reported without fragments", p, err))
+			fragments = nil
 		}
 
 		report.Files = append(report.Files, EXTFile{

@@ -26,50 +26,87 @@ func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 	return fs.parseDirEntries(data)
 }
 
+// dirEntryAlign is the on-disk alignment of a directory record. It is the step
+// used to resynchronise after a damaged record.
+const dirEntryAlign = 4
+
+// parseDirEntries walks a directory data stream.
+//
+// A malformed record no longer discards the whole directory: entries parsed
+// before the fault are always returned. In permissive mode the walk
+// resynchronises to the next 4-byte boundary and keeps going, which recovers the
+// records that follow damage in the middle of a block.
 func (fs *FS) parseDirEntries(data []byte) ([]DirEntry, error) {
 	entries := make([]DirEntry, 0, 32)
+	hasFileType := (fs.sb.FeatureIncompat & featureIncompatFileType) != 0
+
 	for off := 0; off+8 <= len(data); {
-		inode := le32(data, off)
-		recLen := le16(data, off+4)
-		if recLen == 0 {
-			break
-		}
-		if int(recLen) < 8 || off+int(recLen) > len(data) {
-			return nil, ErrUnsupportedLayout
+		entry, recLen, err := parseDirEntryAt(data, off, hasFileType)
+		if err != nil {
+			// A zero record length is how a truncated tail presents; treat it as
+			// the end of the stream rather than as damage.
+			if errors.Is(err, errDirEntryEnd) && !fs.opts.Permissive {
+				return entries, nil
+			}
+			if !fs.opts.Permissive {
+				return entries, err
+			}
+			fs.warn(WarnDegradedRead, "", fmt.Sprintf(
+				"directory record at offset %d is malformed (%v); resynchronising", off, err))
+			off += dirEntryAlign
+			continue
 		}
 
-		nameLen := uint8(data[off+6])
-		fileType := uint8(data[off+7])
-		if (fs.sb.FeatureIncompat & featureIncompatFileType) == 0 {
-			nameLen16 := le16(data, off+6)
-			if nameLen16 > 255 {
-				return nil, ErrUnsupportedLayout
-			}
-			nameLen = uint8(nameLen16)
-			fileType = 0
+		if entry.Inode != 0 {
+			entries = append(entries, entry)
 		}
-		if int(nameLen) > int(recLen)-8 {
-			return nil, ErrUnsupportedLayout
-		}
-		name := string(data[off+8 : off+8+int(nameLen)])
-
-		if inode != 0 {
-			isDir := false
-			if (fs.sb.FeatureIncompat&featureIncompatFileType) != 0 && fileType == extDirentTypeDirectory {
-				isDir = true
-			}
-			entries = append(entries, DirEntry{
-				Inode:       inode,
-				RecLen:      recLen,
-				NameLen:     nameLen,
-				FileType:    fileType,
-				Name:        name,
-				IsDirectory: isDir,
-			})
-		}
-		off += int(recLen)
+		off += recLen
 	}
 	return entries, nil
+}
+
+// errDirEntryEnd marks a record length of zero, which terminates a stream.
+var errDirEntryEnd = errors.New("zero directory record length")
+
+// parseDirEntryAt decodes the record at off and returns its on-disk length.
+func parseDirEntryAt(data []byte, off int, hasFileType bool) (DirEntry, int, error) {
+	inode := le32(data, off)
+	recLen := int(le16(data, off+4))
+	if recLen == 0 {
+		return DirEntry{}, 0, errDirEntryEnd
+	}
+	if recLen < 8 {
+		return DirEntry{}, 0, fmt.Errorf("%w: record length %d below minimum", ErrUnsupportedLayout, recLen)
+	}
+	if recLen%dirEntryAlign != 0 {
+		return DirEntry{}, 0, fmt.Errorf("%w: record length %d is not %d-byte aligned", ErrUnsupportedLayout, recLen, dirEntryAlign)
+	}
+	if off+recLen > len(data) {
+		return DirEntry{}, 0, fmt.Errorf("%w: record at %d overruns %d bytes of directory data", ErrUnsupportedLayout, off, len(data))
+	}
+
+	nameLen := uint8(data[off+6])
+	fileType := uint8(data[off+7])
+	if !hasFileType {
+		nameLen16 := le16(data, off+6)
+		if nameLen16 > 255 {
+			return DirEntry{}, 0, fmt.Errorf("%w: name length %d exceeds 255", ErrUnsupportedLayout, nameLen16)
+		}
+		nameLen = uint8(nameLen16)
+		fileType = 0
+	}
+	if int(nameLen) > recLen-8 {
+		return DirEntry{}, 0, fmt.Errorf("%w: name length %d does not fit record length %d", ErrUnsupportedLayout, nameLen, recLen)
+	}
+
+	return DirEntry{
+		Inode:       inode,
+		RecLen:      uint16(recLen),
+		NameLen:     nameLen,
+		FileType:    fileType,
+		Name:        string(data[off+8 : off+8+int(nameLen)]),
+		IsDirectory: hasFileType && fileType == extDirentTypeDirectory,
+	}, recLen, nil
 }
 
 func (fs *FS) LookupPath(p string) (DirEntry, error) {
