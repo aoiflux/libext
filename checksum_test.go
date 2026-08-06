@@ -3,7 +3,6 @@ package libext
 import (
 	"encoding/binary"
 	"errors"
-	"hash/crc32"
 	"testing"
 )
 
@@ -70,6 +69,13 @@ func TestVerifyInodeChecksumDisabled(t *testing.T) {
 	}
 }
 
+// inodeChecksumForTest stamps fixtures with the checksum ext4 actually stores.
+//
+// This helper previously used hash/crc32 directly, which applies a final
+// complement that Linux's crc32c does not. That made these tests agree with the
+// implementation's own mistake — both were off by the same complement — so the
+// suite passed while no real ext4 image ever verified. The ground truth now
+// lives in checksum_vector_test.go, against a descriptor written by mke2fs.
 func inodeChecksumForTest(uuid [16]byte, inodeNum uint32, raw []byte, hasHi bool) uint32 {
 	buf := make([]byte, len(raw))
 	copy(buf, raw)
@@ -85,10 +91,8 @@ func inodeChecksumForTest(uuid [16]byte, inodeNum uint32, raw []byte, hasHi bool
 	gen := make([]byte, 4)
 	binary.LittleEndian.PutUint32(gen, binary.LittleEndian.Uint32(raw[0x64:0x68]))
 
-	h := crc32.New(extCRC32CTable)
-	_, _ = h.Write(uuid[:])
-	_, _ = h.Write(inum)
-	_, _ = h.Write(gen)
-	_, _ = h.Write(buf)
-	return h.Sum32()
+	seed := extCRC32C(crc32cInit, uuid[:])
+	crc := extCRC32C(seed, inum)
+	crc = extCRC32C(crc, gen)
+	return extCRC32C(crc, buf)
 }

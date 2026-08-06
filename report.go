@@ -43,15 +43,26 @@ type EXTFile struct {
 }
 
 // FileFragment represents a contiguous on-disk byte span for a file.
+// Offsets are inclusive of EndOffset and include Options.BaseOffset.
 type FileFragment struct {
 	StartOffset int64 `json:"start_offset"`
 	EndOffset   int64 `json:"end_offset"`
+
+	// Unwritten marks a preallocated span, which reads as zeros through the
+	// file interface but may still hold prior contents on disk. Only present
+	// when ReportOptions.IncludeUnwritten is set.
+	Unwritten bool `json:"unwritten,omitempty"`
 }
 
 // ReportOptions controls report collection behavior.
 type ReportOptions struct {
 	// DeepScan includes inode-table scanning to surface unlinked/deleted entries.
 	DeepScan bool
+
+	// IncludeUnwritten adds preallocated spans to each file's fragments. They
+	// read as zeros but may still hold prior contents on disk. Off by default,
+	// so fragments describe written data only.
+	IncludeUnwritten bool
 }
 
 // Summary returns aggregate counters useful for UI and analytics workflows.
@@ -150,7 +161,7 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 			// A deep scan walks unallocated inode table entries, which hold
 			// whatever was there before. One unreadable block map must not
 			// discard the report; the entry is kept with no fragments.
-			fragments, err := fs.inodeFragments(inode)
+			fragments, err := fs.inodeFragments(inode, opts.IncludeUnwritten)
 			if err != nil {
 				fs.warn(WarnDegradedRead, "", fmt.Sprintf(
 					"inode %d block map is unreadable (%v); reported without fragments", inodeNum, err))
@@ -179,7 +190,7 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 			return fmt.Errorf("read inode for %s: %w", p, err)
 		}
 
-		fragments, err := fs.inodeFragments(inode)
+		fragments, err := fs.inodeFragments(inode, opts.IncludeUnwritten)
 		if err != nil {
 			fs.warn(WarnDegradedRead, "", fmt.Sprintf(
 				"block map for %s is unreadable (%v); reported without fragments", p, err))
@@ -299,57 +310,44 @@ func inodeTypeName(mode uint16) string {
 	}
 }
 
-func (fs *FS) inodeFragments(inode Inode) ([]FileFragment, error) {
+// inodeFragments returns the contiguous on-disk spans holding a file's written
+// data, at block granularity.
+//
+// Fragments describe written data only: holes and preallocated (unwritten) runs
+// are excluded, and both break a fragment, which is why a preallocated file can
+// report as fragmented. Set ReportOptions.IncludeUnwritten to include
+// preallocated runs, whose blocks may still hold whatever occupied them before.
+// Use Extents or DataRuns for the complete map.
+func (fs *FS) inodeFragments(inode Inode, includeUnwritten bool) ([]FileFragment, error) {
 	if inode.Size == 0 || fs.sb.BlockSize == 0 {
 		return nil, nil
 	}
 
+	exts, err := fs.InodeExtents(inode, ExtentOptions{OmitSparse: true})
+	if err != nil {
+		return nil, err
+	}
+
 	blockSize := uint64(fs.sb.BlockSize)
-	logicalBlocks := (inode.Size + blockSize - 1) / blockSize
-	fragments := make([]FileFragment, 0, 4)
+	fragments := make([]FileFragment, 0, len(exts))
 
-	var (
-		haveRun      bool
-		runStartPhys uint64
-		runLastPhys  uint64
-	)
-
-	flushRun := func() {
-		if !haveRun {
-			return
+	for _, e := range exts {
+		if e.Sparse() || e.Inline() {
+			continue
 		}
+		if e.Unwritten() && !includeUnwritten {
+			continue
+		}
+		// Fragments are block-granular and the end offset is inclusive, matching
+		// the shape this field has always had.
+		start := e.PhysicalBlock * blockSize
+		end := (e.PhysicalBlock+e.Blocks)*blockSize - 1
 		fragments = append(fragments, FileFragment{
-			StartOffset: int64(runStartPhys * blockSize),
-			EndOffset:   int64((runLastPhys+1)*blockSize - 1),
+			StartOffset: int64(start) + fs.opts.BaseOffset,
+			EndOffset:   int64(end) + fs.opts.BaseOffset,
+			Unwritten:   e.Unwritten(),
 		})
-		haveRun = false
 	}
-
-	for logical := uint64(0); logical < logicalBlocks; logical++ {
-		phys, mapped, err := fs.inodeBlockNumber(inode, logical)
-		if err != nil {
-			return nil, err
-		}
-		if !mapped {
-			flushRun()
-			continue
-		}
-		if !haveRun {
-			runStartPhys = phys
-			runLastPhys = phys
-			haveRun = true
-			continue
-		}
-		if phys == runLastPhys+1 {
-			runLastPhys = phys
-			continue
-		}
-		flushRun()
-		runStartPhys = phys
-		runLastPhys = phys
-		haveRun = true
-	}
-	flushRun()
 
 	return fragments, nil
 }

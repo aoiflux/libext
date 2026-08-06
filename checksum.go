@@ -8,6 +8,34 @@ import (
 
 var extCRC32CTable = crc32.MakeTable(crc32.Castagnoli)
 
+const (
+	// crc32cInit is the seed ext4 starts every checksum chain from (~0).
+	crc32cInit = ^uint32(0)
+
+	// superblockChecksumOffset is the offset of s_checksum, and therefore the
+	// number of bytes the superblock checksum covers.
+	superblockChecksumOffset = 0x3FC
+)
+
+// extCRC32C is the CRC-32C ext4 uses.
+//
+// It differs from hash/crc32 in one respect that invalidates every result if
+// missed: Linux's crc32c is a running update with no final complement, whereas
+// hash/crc32 complements both on entry and on exit. Undoing both complements
+// turns the standard implementation into the one ext4 expects.
+func extCRC32C(seed uint32, data []byte) uint32 {
+	return ^crc32.Update(^seed, extCRC32CTable, data)
+}
+
+// csumSeed is the value that seeds group descriptor and inode checksums: the
+// stored seed when the filesystem carries one, otherwise a checksum of the UUID.
+func (fs *FS) csumSeed() uint32 {
+	if (fs.sb.FeatureIncompat&featureIncompatCSumSeed) != 0 && fs.sb.ChecksumSeed != 0 {
+		return fs.sb.ChecksumSeed
+	}
+	return extCRC32C(crc32cInit, fs.sb.UUID[:])
+}
+
 func (fs *FS) shouldValidateMetadataChecksums() bool {
 	return (fs.sb.FeatureROCompat & featureRoCompatMetadataCS) != 0
 }
@@ -20,13 +48,10 @@ func (fs *FS) verifySuperblockChecksum(raw []byte) error {
 		return ErrUnsupportedLayout
 	}
 
-	stored := le32(raw, 0x3FC)
-	buf := make([]byte, superblockSize)
-	copy(buf, raw[:superblockSize])
-	for i := 0x3FC; i < 0x400; i++ {
-		buf[i] = 0
-	}
-	calc := crc32.Checksum(buf, extCRC32CTable)
+	// The checksum covers the bytes preceding s_checksum, not the whole
+	// superblock with the field zeroed: the trailing zeros would be folded in.
+	stored := le32(raw, superblockChecksumOffset)
+	calc := extCRC32C(crc32cInit, raw[:superblockChecksumOffset])
 	if stored != calc {
 		return fmt.Errorf("%w: superblock stored=0x%08x calc=0x%08x", ErrChecksumMismatch, stored, calc)
 	}
@@ -58,12 +83,10 @@ func (fs *FS) verifyGroupDescriptorChecksum(group uint32, raw []byte) error {
 	g := make([]byte, 4)
 	binary.LittleEndian.PutUint32(g, group)
 
-	h := crc32.New(extCRC32CTable)
-	_, _ = h.Write(fs.sb.UUID[:])
-	_, _ = h.Write(g)
-	_, _ = h.Write(desc)
+	crc := extCRC32C(fs.csumSeed(), g)
+	crc = extCRC32C(crc, desc)
 
-	calc := uint16(h.Sum32() & 0xFFFF)
+	calc := uint16(crc & 0xFFFF)
 	if stored != calc {
 		return fmt.Errorf("%w: group=%d stored=0x%04x calc=0x%04x", ErrChecksumMismatch, group, stored, calc)
 	}
@@ -101,12 +124,9 @@ func (fs *FS) verifyInodeChecksum(inodeNum uint32, raw []byte) error {
 	gen := make([]byte, 4)
 	binary.LittleEndian.PutUint32(gen, le32(raw, 0x64))
 
-	h := crc32.New(extCRC32CTable)
-	_, _ = h.Write(fs.sb.UUID[:])
-	_, _ = h.Write(inum)
-	_, _ = h.Write(gen)
-	_, _ = h.Write(buf)
-	calc := h.Sum32()
+	crc := extCRC32C(fs.csumSeed(), inum)
+	crc = extCRC32C(crc, gen)
+	calc := extCRC32C(crc, buf)
 
 	if hasHi {
 		if calc != stored {

@@ -6,11 +6,34 @@ import (
 )
 
 // File represents an opened EXT inode with file-like methods.
+//
+// A File is not safe for concurrent use: it carries a seek offset and caches the
+// inode's block map on first use.
 type File struct {
 	volume *FS
 	inode  Inode
 	name   string
 	offset uint64
+
+	// extents caches the resolved block map so that a sequence of reads costs
+	// one map resolution rather than one per call.
+	extents    []Extent
+	extentsErr error
+	mapped     bool
+}
+
+// blockMap resolves and caches the file's block map.
+func (f *File) blockMap() ([]Extent, error) {
+	if !f.mapped {
+		f.extents, f.extentsErr = f.volume.InodeExtents(f.inode, ExtentOptions{})
+		f.mapped = true
+	}
+	return f.extents, f.extentsErr
+}
+
+// Inode returns the inode backing the file.
+func (f *File) Inode() Inode {
+	return f.inode
 }
 
 // Name returns the display name if available.
@@ -55,7 +78,11 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	if uint64(off) >= f.inode.Size {
 		return 0, io.EOF
 	}
-	n, err := f.volume.readInodeDataAt(f.inode, uint64(off), p)
+	exts, err := f.blockMap()
+	if err != nil {
+		return 0, fmt.Errorf("inode %d block map: %w", f.inode.Number, err)
+	}
+	n, err := f.volume.readInodeDataAtMapped(f.inode, exts, uint64(off), p)
 	if err != nil {
 		return n, err
 	}
@@ -139,6 +166,19 @@ func (fs *FS) readInodeData(inode Inode) ([]byte, error) {
 }
 
 func (fs *FS) readInodeDataAt(inode Inode, off uint64, out []byte) (int, error) {
+	exts, err := fs.InodeExtents(inode, ExtentOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("inode %d block map: %w", inode.Number, err)
+	}
+	return fs.readInodeDataAtMapped(inode, exts, off, out)
+}
+
+// readInodeDataAtMapped serves a read from an already-resolved block map.
+//
+// Resolving the map once per read rather than once per block is what makes this
+// linear: the previous path re-parsed the whole extent tree, or re-read an
+// indirect block, for every block it copied.
+func (fs *FS) readInodeDataAtMapped(inode Inode, exts []Extent, off uint64, out []byte) (int, error) {
 	if off >= inode.Size {
 		return 0, io.EOF
 	}
@@ -158,20 +198,19 @@ func (fs *FS) readInodeDataAt(inode Inode, off uint64, out []byte) (int, error) 
 			chunk = remain
 		}
 
-		physBlock, mapped, err := fs.inodeBlockNumber(inode, logical)
-		if err != nil {
-			return int(copied), fmt.Errorf("inode %d block map: %w", inode.Number, err)
-		}
-		if mapped {
+		e, ok := lookupExtent(exts, logical)
+		if ok && !e.Sparse() && !e.Unwritten() && !e.Inline() {
+			physBlock := e.PhysicalBlock + (logical - e.LogicalBlock)
 			blk, err := fs.readBlock(physBlock)
 			if err != nil {
 				return int(copied), err
 			}
-			start := int(copied)
-			end := int(copied + chunk)
-			blkStart := int(inBlockOff)
-			blkEnd := int(inBlockOff + chunk)
-			copy(out[start:end], blk[blkStart:blkEnd])
+			copy(out[copied:copied+chunk], blk[inBlockOff:inBlockOff+chunk])
+		} else {
+			// A hole, a preallocated run, or an unmapped block reads as zeros.
+			// out belongs to the caller and may hold anything, so the span must
+			// be cleared rather than skipped.
+			clear(out[copied : copied+chunk])
 		}
 		copied += chunk
 	}

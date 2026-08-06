@@ -99,6 +99,10 @@ func writeTestInode(img []byte, num uint32, mode uint16, size uint32, flags uint
 	copy(raw[0x28:0x28+60], blockRaw)
 }
 
+func newFixtureReader(img []byte) io.ReaderAt {
+	return bytes.NewReader(img)
+}
+
 func hasWarning(warnings []Warning, code WarningCode) bool {
 	for _, w := range warnings {
 		if w.Code == code {
@@ -544,10 +548,10 @@ func TestExtentInodeDoesNotFallBackToClassicMap(t *testing.T) {
 	// header as block pointers and returns fabricated offsets.
 	fs := newExtentFS(nil)
 
-	inode := Inode{Number: 12, HasExtents: true}
+	inode := Inode{Number: 12, Size: 4096, IsRegular: true, HasExtents: true}
 	copy(inode.BlockRaw[:], inodeRoot(extentHeader(340, 340, 0)))
 
-	if _, _, err := fs.inodeBlockNumber(inode, 0); err == nil {
+	if _, err := fs.InodeExtents(inode, ExtentOptions{}); err == nil {
 		t.Fatal("unparseable extent tree silently fell back to the classic block map")
 	}
 }

@@ -40,6 +40,7 @@ func (fs *FS) loadSuperblock() error {
 	sb.JournalDevice = le32(buf, 0xE4)
 	sb.LastOrphan = le32(buf, 0xE8)
 	sb.DescSize = le16(buf, 0xFE)
+	sb.ChecksumSeed = le32(buf, 0x270)
 
 	if sb.Magic != extMagic {
 		return ErrInvalidSuperblock

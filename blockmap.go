@@ -1,7 +1,6 @@
 package libext
 
 import (
-	"encoding/binary"
 	"fmt"
 )
 
@@ -33,153 +32,33 @@ func (fs *FS) maxExtents() int {
 	return defaultMaxExtents
 }
 
-func (fs *FS) inodeBlockNumber(inode Inode, logical uint64) (uint64, bool, error) {
-	if inode.HasExtents || fs.kind == FSKindExt4 || (fs.sb.FeatureIncompat&featureIncompatExtents) != 0 {
-		recs, err := fs.parseExtentTree(inode.BlockRaw[:])
-		if err != nil {
-			// The inode flag asserts this is an extent tree. Falling back to the
-			// classic block map would reinterpret the extent header as block
-			// pointers and return fabricated offsets, so report the failure.
-			if inode.HasExtents {
-				return 0, false, fmt.Errorf("inode %d extent tree: %w", inode.Number, err)
-			}
-		} else if len(recs) > 0 {
-			for _, rec := range recs {
-				start := uint64(rec.logicalStart)
-				end := start + uint64(rec.length)
-				if logical < start || logical >= end {
-					continue
-				}
-				if rec.unwritten {
-					return 0, false, nil
-				}
-				return rec.physical + (logical - start), true, nil
-			}
-			return 0, false, nil
-		}
-	}
-	return fs.classicBlockNumber(inode.BlockRaw[:], logical)
-}
-
-func (fs *FS) classicBlockNumber(blockRaw []byte, logical uint64) (uint64, bool, error) {
-	ptrs := make([]uint32, 15)
-	for i := 0; i < 15; i++ {
-		ptrs[i] = binary.LittleEndian.Uint32(blockRaw[i*4 : i*4+4])
-	}
-
-	entriesPerBlock := uint64(fs.sb.BlockSize / 4)
-	if logical < 12 {
-		p := ptrs[logical]
-		if p == 0 {
-			return 0, false, nil
-		}
-		return uint64(p), true, nil
-	}
-
-	logical -= 12
-	if logical < entriesPerBlock {
-		if ptrs[12] == 0 {
-			return 0, false, nil
-		}
-		p, err := fs.readPointerFromBlock(uint64(ptrs[12]), logical)
-		if err != nil {
-			return 0, false, err
-		}
-		if p == 0 {
-			return 0, false, nil
-		}
-		return uint64(p), true, nil
-	}
-
-	logical -= entriesPerBlock
-	doubleSpan := entriesPerBlock * entriesPerBlock
-	if logical < doubleSpan {
-		if ptrs[13] == 0 {
-			return 0, false, nil
-		}
-		l1 := logical / entriesPerBlock
-		l2 := logical % entriesPerBlock
-		p1, err := fs.readPointerFromBlock(uint64(ptrs[13]), l1)
-		if err != nil {
-			return 0, false, err
-		}
-		if p1 == 0 {
-			return 0, false, nil
-		}
-		p2, err := fs.readPointerFromBlock(uint64(p1), l2)
-		if err != nil {
-			return 0, false, err
-		}
-		if p2 == 0 {
-			return 0, false, nil
-		}
-		return uint64(p2), true, nil
-	}
-
-	logical -= doubleSpan
-	tripleSpan := entriesPerBlock * entriesPerBlock * entriesPerBlock
-	if logical >= tripleSpan {
-		return 0, false, nil
-	}
-	if ptrs[14] == 0 {
-		return 0, false, nil
-	}
-
-	l1 := logical / (entriesPerBlock * entriesPerBlock)
-	rem := logical % (entriesPerBlock * entriesPerBlock)
-	l2 := rem / entriesPerBlock
-	l3 := rem % entriesPerBlock
-
-	p1, err := fs.readPointerFromBlock(uint64(ptrs[14]), l1)
-	if err != nil {
-		return 0, false, err
-	}
-	if p1 == 0 {
-		return 0, false, nil
-	}
-	p2, err := fs.readPointerFromBlock(uint64(p1), l2)
-	if err != nil {
-		return 0, false, err
-	}
-	if p2 == 0 {
-		return 0, false, nil
-	}
-	p3, err := fs.readPointerFromBlock(uint64(p2), l3)
-	if err != nil {
-		return 0, false, err
-	}
-	if p3 == 0 {
-		return 0, false, nil
-	}
-	return uint64(p3), true, nil
-}
-
-func (fs *FS) readPointerFromBlock(block uint64, idx uint64) (uint32, error) {
-	blk, err := fs.readBlock(block)
-	if err != nil {
-		return 0, err
-	}
-	max := uint64(len(blk) / 4)
-	if idx >= max {
-		return 0, nil
-	}
-	off := idx * 4
-	return binary.LittleEndian.Uint32(blk[off : off+4]), nil
-}
-
-// extentWalk carries the per-inode limits that bound a tree traversal.
+// extentWalk carries the per-inode limits that bound a tree traversal, and
+// records the index blocks visited so they can be reported as metadata.
 type extentWalk struct {
 	visited map[uint64]struct{}
+	index   []uint64
 	count   int
 	limit   int
 }
 
 func (fs *FS) parseExtentTree(root []byte) ([]extentRecord, error) {
+	recs, _, err := fs.parseExtentTreeWithMeta(root)
+	return recs, err
+}
+
+// parseExtentTreeWithMeta parses a tree and also returns the index blocks it
+// traversed. Those blocks belong to the file but hold mapping structures rather
+// than data.
+func (fs *FS) parseExtentTreeWithMeta(root []byte) ([]extentRecord, []uint64, error) {
 	w := &extentWalk{
 		visited: make(map[uint64]struct{}),
 		limit:   fs.maxExtents(),
 	}
-	return fs.parseExtentNode(root, -1, w)
+	recs, err := fs.parseExtentNode(root, -1, w)
+	if err != nil {
+		return nil, nil, err
+	}
+	return recs, w.index, nil
 }
 
 // parseExtentNode parses one node of an extent tree.
@@ -261,6 +140,7 @@ func (fs *FS) parseExtentNode(node []byte, parentDepth int, w *extentWalk) ([]ex
 			return nil, fmt.Errorf("%w: extent index block %d revisited", ErrUnsupportedLayout, leaf)
 		}
 		w.visited[leaf] = struct{}{}
+		w.index = append(w.index, leaf)
 
 		child, err := fs.readBlock(leaf)
 		if err != nil {

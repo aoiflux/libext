@@ -35,7 +35,8 @@ const (
 )
 
 const (
-	inodeFlagExtents = 0x00080000
+	inodeFlagExtents    = 0x00080000
+	inodeFlagInlineData = 0x10000000
 )
 
 const (
@@ -49,6 +50,7 @@ const (
 
 	featureRoCompatSparseSuper = 0x0001
 	featureRoCompatGDTChecksum = 0x0010
+	featureRoCompatBigalloc    = 0x0200
 	featureRoCompatMetadataCS  = 0x0400
 )
 
@@ -85,6 +87,7 @@ type Superblock struct {
 	JournalInode      uint32
 	JournalDevice     uint32
 	LastOrphan        uint32
+	ChecksumSeed      uint32 // s_checksum_seed; meaningful only with CSUM_SEED
 	GroupsCount       uint32
 	GroupDescSize     uint16
 	GroupDescTableOff uint64
