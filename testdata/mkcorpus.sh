@@ -107,6 +107,32 @@ debugfs -w -R 'ea_set /f1.txt security.selinux system_u:object_r:etc_t:s0' xattr
 debugfs -w -R 'ea_set /f1.txt user.comment hello-attr' xattr.img >/dev/null 2>&1
 debugfs -w -R "ea_set /f2.txt user.big $(printf 'A%.0s' $(seq 1 64))" xattr.img >/dev/null 2>&1
 
+# --- ext3: a journal, but classic block maps ---------------------------------
+tree_basic t
+build ext3-1k.img aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 16384 -t ext3 -b 1024 -I 128 -d t
+
+# --- HTree: a directory large enough to be indexed ---------------------------
+# DIR_INDEX only engages past one block of entries, so 3000 names guarantees it.
+rm -rf t && mkdir -p t/many
+for i in $(seq 1 3000); do echo "$i" > "t/many/entry-$(printf '%04d' "$i").txt"; done
+build htree.img bbbbbbbb-cccc-dddd-eeee-ffffffffffff 32768 -t ext4 -O dir_index -b 1024 -I 256 -d t
+
+# --- modern ext4 features that must not block a read -------------------------
+tree_basic t
+build fastcommit.img cccccccc-dddd-eeee-ffff-000000000000 16384 -t ext4 -O fast_commit -b 1024 -I 256 -d t
+build orphanfile.img dddddddd-eeee-ffff-0000-111111111111 16384 -t ext4 -O orphan_file -b 1024 -I 256 -d t
+build casefold.img eeeeeeee-ffff-0000-1111-222222222222 16384 -t ext4 -O casefold -b 1024 -I 256 -d t
+build csumseed.img ffffffff-0000-1111-2222-333333333333 16384 -t ext4 -O metadata_csum_seed -b 1024 -I 256 -d t
+
+# --- an attribute value too large to sit in the inode ------------------------
+rm -rf t && mkdir t && echo big > t/f.txt
+build xattr-block.img 12121212-3434-5656-7878-9a9a9a9a9a9a 8192 -t ext4 -b 1024 -I 256 -d t
+# 2000 bytes exceeds the inode's spare room, forcing an external attribute block.
+python3 - <<'PY' > /tmp/bigval.txt 2>/dev/null || printf 'B%.0s' $(seq 1 2000) > /tmp/bigval.txt
+print('B' * 2000, end='')
+PY
+debugfs -w -R "ea_set -f /tmp/bigval.txt /f.txt user.huge" xattr-block.img >/dev/null 2>&1
+
 # --- features that must be refused rather than answered wrongly --------------
 rm -rf t && mkdir t && echo x > t/f
 build bigalloc.img 88888888-9999-aaaa-bbbb-cccccccccccc 32768 -t ext4 -O bigalloc -C 16384 -b 1024 -I 256 -d t
