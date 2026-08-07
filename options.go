@@ -38,7 +38,31 @@ type Options struct {
 	// MaxExtents caps the number of extent records parsed for a single inode.
 	// 0 selects the library default.
 	MaxExtents int
+
+	// Parallelism bounds the worker goroutines used by whole-image scans, which
+	// are the only operations here with enough independent work to be worth
+	// overlapping. Every other call is single-threaded regardless.
+	//
+	//	0 or 1           run inline; no goroutines are created at all
+	//	ParallelismAuto  size the pool from the machine, capped modestly
+	//	n > 1            use exactly n workers
+	//
+	// The zero value is sequential, so parallelism is something a caller opts
+	// into rather than something that arrives with an upgrade. That matters
+	// beyond taste: io.ReaderAt is specified as safe for concurrent use, but a
+	// caller's implementation may not honour it, and this package should not be
+	// the one to discover that on their behalf.
+	//
+	// Results do not depend on the setting. Work is reassembled in input order,
+	// so parallelism changes timing and nothing else. Raising it past a handful
+	// rarely helps: these scans are bound by the reader, not by CPU.
+	Parallelism int
 }
+
+// ParallelismAuto asks the library to size its worker pool from the machine,
+// capped modestly because whole-image scans are I/O bound. Pass it in
+// Options.Parallelism; the zero value stays sequential.
+const ParallelismAuto = -1
 
 // WarningCode classifies a non-fatal condition observed while parsing.
 type WarningCode uint8

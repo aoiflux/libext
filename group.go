@@ -9,7 +9,7 @@ const groupPrealloc = 4096
 
 func (fs *FS) loadGroupDescriptors() error {
 	gdSize := int(fs.sb.GroupDescSize)
-	if gdSize < 32 {
+	if gdSize < gdSizeMin {
 		return fmt.Errorf("%w: group descriptor size %d", ErrInvalidSuperblock, gdSize)
 	}
 
@@ -64,34 +64,34 @@ func (fs *FS) loadGroupDescriptors() error {
 }
 
 func parseGroupDescriptor(buf []byte, group uint32) (GroupDescriptor, error) {
-	if len(buf) < 32 {
+	if len(buf) < gdSizeMin {
 		return GroupDescriptor{}, ErrUnsupportedLayout
 	}
 	gd := GroupDescriptor{
 		Group:               group,
-		BlockBitmapBlock:    uint64(le32(buf, 0x00)),
-		InodeBitmapBlock:    uint64(le32(buf, 0x04)),
-		InodeTableBlock:     uint64(le32(buf, 0x08)),
-		FreeBlocksCount:     uint32(le16(buf, 0x0C)),
-		FreeInodesCount:     uint32(le16(buf, 0x0E)),
-		UsedDirsCount:       uint32(le16(buf, 0x10)),
-		Flags:               le16(buf, 0x12),
-		BlockBitmapChecksum: uint32(le16(buf, 0x18)),
-		InodeBitmapChecksum: uint32(le16(buf, 0x1A)),
-		ItableUnused:        uint32(le16(buf, 0x1C)),
-		Checksum:            le16(buf, 0x1E),
+		BlockBitmapBlock:    uint64(le32(buf, gdOffBlockBitmapLo)),
+		InodeBitmapBlock:    uint64(le32(buf, gdOffInodeBitmapLo)),
+		InodeTableBlock:     uint64(le32(buf, gdOffInodeTableLo)),
+		FreeBlocksCount:     uint32(le16(buf, gdOffFreeBlocksLo)),
+		FreeInodesCount:     uint32(le16(buf, gdOffFreeInodesLo)),
+		UsedDirsCount:       uint32(le16(buf, gdOffUsedDirsLo)),
+		Flags:               le16(buf, gdOffFlags),
+		BlockBitmapChecksum: uint32(le16(buf, gdOffBlockBitmapCSLo)),
+		InodeBitmapChecksum: uint32(le16(buf, gdOffInodeBitmapCSLo)),
+		ItableUnused:        uint32(le16(buf, gdOffItableUnusedLo)),
+		Checksum:            le16(buf, gdOffChecksum),
 	}
 
-	if len(buf) >= 64 {
-		gd.BlockBitmapBlock |= uint64(le32(buf, 0x20)) << 32
-		gd.InodeBitmapBlock |= uint64(le32(buf, 0x24)) << 32
-		gd.InodeTableBlock |= uint64(le32(buf, 0x28)) << 32
-		gd.FreeBlocksCount |= uint32(le16(buf, 0x2C)) << 16
-		gd.FreeInodesCount |= uint32(le16(buf, 0x2E)) << 16
-		gd.UsedDirsCount |= uint32(le16(buf, 0x30)) << 16
-		gd.ItableUnused |= uint32(le16(buf, 0x32)) << 16
-		gd.BlockBitmapChecksum |= uint32(le16(buf, 0x38)) << 16
-		gd.InodeBitmapChecksum |= uint32(le16(buf, 0x3A)) << 16
+	if len(buf) >= gdSize64Bit {
+		gd.BlockBitmapBlock |= uint64(le32(buf, gdOffBlockBitmapHi)) << 32
+		gd.InodeBitmapBlock |= uint64(le32(buf, gdOffInodeBitmapHi)) << 32
+		gd.InodeTableBlock |= uint64(le32(buf, gdOffInodeTableHi)) << 32
+		gd.FreeBlocksCount |= uint32(le16(buf, gdOffFreeBlocksHi)) << 16
+		gd.FreeInodesCount |= uint32(le16(buf, gdOffFreeInodesHi)) << 16
+		gd.UsedDirsCount |= uint32(le16(buf, gdOffUsedDirsHi)) << 16
+		gd.ItableUnused |= uint32(le16(buf, gdOffItableUnusedHi)) << 16
+		gd.BlockBitmapChecksum |= uint32(le16(buf, gdOffBlockBitmapCSHi)) << 16
+		gd.InodeBitmapChecksum |= uint32(le16(buf, gdOffInodeBitmapCSHi)) << 16
 	}
 
 	return gd, nil

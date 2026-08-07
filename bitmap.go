@@ -9,21 +9,33 @@ import "fmt"
 // else since". They are also what keeps a scan honest — a group flagged
 // uninitialised holds pre-existing disk contents, not deleted files.
 
+// bitmapKind distinguishes the two allocation bitmaps a group owns. It exists
+// so the cache and the read path can be written once instead of twice.
+type bitmapKind uint8
+
+const (
+	blockBitmapKind bitmapKind = iota
+	inodeBitmapKind
+)
+
+func (k bitmapKind) String() string {
+	if k == inodeBitmapKind {
+		return "inode"
+	}
+	return "block"
+}
+
 // BlockBitmap returns the raw allocation bitmap for a block group.
 //
 // The result covers BlocksPerGroup bits. A group flagged BlockUninit has no
 // meaningful bitmap on disk; an all-zero bitmap is returned for it, since none
 // of its blocks are in use.
+//
+// The returned slice is cached and shared between callers. Treat it as
+// read-only: bitmaps do not change while an image is open, and copying one per
+// call would defeat the cache that makes a full-image scan affordable.
 func (fs *FS) BlockBitmap(group uint32) ([]byte, error) {
-	gd, err := fs.group(group)
-	if err != nil {
-		return nil, err
-	}
-	size := int((fs.sb.BlocksPerGroup + 7) / 8)
-	if gd.BlockUninit() {
-		return make([]byte, size), nil
-	}
-	return fs.readBitmap(gd.BlockBitmapBlock, size, "block", group)
+	return fs.cachedBitmap(group, blockBitmapKind)
 }
 
 // InodeBitmap returns the raw allocation bitmap for a block group.
@@ -31,16 +43,85 @@ func (fs *FS) BlockBitmap(group uint32) ([]byte, error) {
 // The result covers InodesPerGroup bits. A group flagged InodeUninit returns an
 // all-zero bitmap: its inode table has never been written, so nothing in it is
 // allocated regardless of what the bytes on disk happen to say.
+//
+// The same caching and read-only caveat as BlockBitmap applies.
 func (fs *FS) InodeBitmap(group uint32) ([]byte, error) {
+	return fs.cachedBitmap(group, inodeBitmapKind)
+}
+
+// cachedBitmap returns a group's bitmap, reading it at most once per image.
+//
+// Judging whether a deleted file's blocks have been reused needs one bitmap
+// lookup per block, so without a cache a single large file re-reads the same
+// bitmap thousands of times. The cache is shared across goroutines under an
+// RWMutex; a bitmap is immutable once read, so concurrent readers never block
+// each other after the first miss.
+func (fs *FS) cachedBitmap(group uint32, kind bitmapKind) ([]byte, error) {
+	fs.bitmapMu.RLock()
+	cache := fs.blockBitmap
+	if kind == inodeBitmapKind {
+		cache = fs.inodeBitmap
+	}
+	bitmap, ok := cache[group]
+	fs.bitmapMu.RUnlock()
+	if ok {
+		return bitmap, nil
+	}
+
+	bitmap, err := fs.loadBitmap(group, kind)
+	if err != nil {
+		return nil, err
+	}
+
+	fs.bitmapMu.Lock()
+	defer fs.bitmapMu.Unlock()
+
+	// Another goroutine may have populated the entry while this one was
+	// reading. Prefer the stored slice so every caller shares one copy.
+	if kind == inodeBitmapKind {
+		if fs.inodeBitmap == nil {
+			fs.inodeBitmap = make(map[uint32][]byte)
+		}
+		if existing, ok := fs.inodeBitmap[group]; ok {
+			return existing, nil
+		}
+		fs.inodeBitmap[group] = bitmap
+		return bitmap, nil
+	}
+
+	if fs.blockBitmap == nil {
+		fs.blockBitmap = make(map[uint32][]byte)
+	}
+	if existing, ok := fs.blockBitmap[group]; ok {
+		return existing, nil
+	}
+	fs.blockBitmap[group] = bitmap
+	return bitmap, nil
+}
+
+// loadBitmap reads one bitmap from disk, honouring the uninitialised flags.
+func (fs *FS) loadBitmap(group uint32, kind bitmapKind) ([]byte, error) {
 	gd, err := fs.group(group)
 	if err != nil {
 		return nil, err
 	}
-	size := int((fs.sb.InodesPerGroup + 7) / 8)
-	if gd.InodeUninit() {
+
+	var (
+		bits   uint32
+		block  uint64
+		uninit bool
+	)
+	if kind == inodeBitmapKind {
+		bits, block, uninit = fs.sb.InodesPerGroup, gd.InodeBitmapBlock, gd.InodeUninit()
+	} else {
+		bits, block, uninit = fs.sb.BlocksPerGroup, gd.BlockBitmapBlock, gd.BlockUninit()
+	}
+
+	size := int((bits + bitsPerByte - 1) / bitsPerByte)
+	if uninit {
 		return make([]byte, size), nil
 	}
-	return fs.readBitmap(gd.InodeBitmapBlock, size, "inode", group)
+	return fs.readBitmap(block, size, kind.String(), group)
 }
 
 func (fs *FS) group(group uint32) (GroupDescriptor, error) {

@@ -467,7 +467,7 @@ func (fs *FS) DescribeJournalStatus() (string, error) {
 func (fs *FS) GetJournalFeatures() map[string]bool {
 	features := map[string]bool{
 		"has_journal":    fs.sb.FeatureCompat&featureCompatHasJournal != 0,
-		"needs_recovery": fs.sb.FeatureIncompat&0x0004 != 0,
+		"needs_recovery": fs.sb.FeatureIncompat&featureIncompatRecover != 0,
 	}
 
 	// The journal's own feature flags live in its superblock, not the

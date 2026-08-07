@@ -66,9 +66,9 @@ func (fs *FS) verifyGroupDescriptorChecksum(group uint32, raw []byte) error {
 		return ErrUnsupportedLayout
 	}
 
-	stored := le16(raw, 0x1E)
+	stored := le16(raw, gdOffChecksum)
 	descSize := int(fs.sb.GroupDescSize)
-	if descSize < 32 {
+	if descSize < gdSizeMin {
 		descSize = 32
 	}
 	if descSize > len(raw) {
@@ -77,8 +77,8 @@ func (fs *FS) verifyGroupDescriptorChecksum(group uint32, raw []byte) error {
 
 	desc := make([]byte, descSize)
 	copy(desc, raw[:descSize])
-	desc[0x1E] = 0
-	desc[0x1F] = 0
+	desc[gdOffChecksum] = 0
+	desc[gdOffChecksum+1] = 0
 
 	g := make([]byte, 4)
 	binary.LittleEndian.PutUint32(g, group)
@@ -102,27 +102,27 @@ func (fs *FS) verifyInodeChecksum(inodeNum uint32, raw []byte) error {
 	}
 
 	// In ext4, i_checksum_lo lives in osd2 at offset 0x7C.
-	storedLo := le16(raw, 0x7C)
+	storedLo := le16(raw, inodeOffChecksumLo)
 	stored := uint32(storedLo)
 	hasHi := inodeHasChecksumHi(raw)
 	if hasHi {
-		storedHi := le16(raw, 0x82)
+		storedHi := le16(raw, inodeOffChecksumHi)
 		stored |= uint32(storedHi) << 16
 	}
 
 	buf := make([]byte, len(raw))
 	copy(buf, raw)
-	buf[0x7C] = 0
-	buf[0x7D] = 0
+	buf[inodeOffChecksumLo] = 0
+	buf[inodeOffChecksumLo+1] = 0
 	if hasHi {
-		buf[0x82] = 0
-		buf[0x83] = 0
+		buf[inodeOffChecksumHi] = 0
+		buf[inodeOffChecksumHi+1] = 0
 	}
 
 	inum := make([]byte, 4)
 	binary.LittleEndian.PutUint32(inum, inodeNum)
 	gen := make([]byte, 4)
-	binary.LittleEndian.PutUint32(gen, le32(raw, 0x64))
+	binary.LittleEndian.PutUint32(gen, le32(raw, inodeOffGeneration))
 
 	crc := extCRC32C(fs.csumSeed(), inum)
 	crc = extCRC32C(crc, gen)
@@ -143,18 +143,18 @@ func (fs *FS) verifyInodeChecksum(inodeNum uint32, raw []byte) error {
 }
 
 func inodeHasChecksumHi(raw []byte) bool {
-	if len(raw) < 0x84 {
+	if len(raw) < inodeChecksumHiEnd {
 		return false
 	}
 	// i_checksum_hi exists only when extra inode space reaches offset 0x82.
-	extra := int(le16(raw, 0x80))
-	return 128+extra >= 0x84
+	extra := int(le16(raw, inodeOffExtraISize))
+	return inodeBaseSize+extra >= inodeChecksumHiEnd
 }
 
 // bitmapChecksumWidth reports how many bits of a bitmap checksum are stored.
 // The high half of the field exists only in a 64-bit group descriptor.
 func (fs *FS) bitmapChecksumWidth() uint32 {
-	if fs.sb.GroupDescSize >= 64 {
+	if fs.sb.GroupDescSize >= gdSize64Bit {
 		return 32
 	}
 	return 16

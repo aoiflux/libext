@@ -172,7 +172,7 @@ func (fs *FS) recoverSlackRecord(dirInode uint32, block []byte, off, limit int, 
 	if recLen < 8+nameLen || recLen%dirEntryAlign != 0 || recLen > limit {
 		return dirSlackCandidate{}, false
 	}
-	if fileType > 7 {
+	if fileType > dirEntryFileTypeMax {
 		return dirSlackCandidate{}, false
 	}
 
@@ -212,7 +212,7 @@ func plausibleFileName(name string) bool {
 			return false
 		}
 		// Control characters do not appear in names written by any normal tool.
-		if c < 0x20 || c == 0x7F {
+		if c < asciiSpace || c == asciiDelete {
 			return false
 		}
 	}

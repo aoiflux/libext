@@ -1,8 +1,8 @@
 package libext
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"path"
 	"sort"
 )
@@ -153,13 +153,30 @@ var errScanStop = errors.New("scan complete")
 //
 // Returning an error from fn stops the scan and propagates that error. This is
 // the form to use on large images: nothing is accumulated.
+//
+// fn is always called from the calling goroutine, in a stable order, even when
+// Options.Parallelism has the underlying reads running concurrently. Callers
+// need no synchronisation of their own.
 func (fs *FS) ScanDeleted(opts DeletedScanOptions, fn func(DeletedEntry) error) error {
+	return fs.ScanDeletedContext(context.Background(), opts, fn)
+}
+
+// ScanDeletedContext is ScanDeleted with cancellation.
+//
+// A full inode table scan on a large image takes a long time; cancelling the
+// context stops it at the next checkpoint and returns the context's error. Work
+// already handed to the callback is not retracted.
+func (fs *FS) ScanDeletedContext(ctx context.Context, opts DeletedScanOptions, fn func(DeletedEntry) error) error {
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
 	if fn == nil {
 		return errors.New("scan callback is nil")
 	}
 
 	sc := &deletedScan{
 		fs:      fs,
+		ctx:     ctx,
 		opts:    opts,
 		seen:    make(map[uint32]bool),
 		slack:   make(map[uint32]slackName),
@@ -173,10 +190,12 @@ func (fs *FS) ScanDeleted(opts DeletedScanOptions, fn func(DeletedEntry) error) 
 	return err
 }
 
-// deletedScan carries per-scan state, notably the bitmap cache. Without it,
-// judging recoverability re-reads a group's block bitmap once per block.
+// deletedScan carries the state one scan needs. Nothing here is shared with
+// another scan, and the maps are only touched from the calling goroutine: the
+// parallel phase reads them but never writes.
 type deletedScan struct {
 	fs   *FS
+	ctx  context.Context
 	opts DeletedScanOptions
 
 	// seen suppresses duplicate inode-table reports when an inode is also found
@@ -189,8 +208,7 @@ type deletedScan struct {
 	claimed  map[uint32]bool
 	dirPaths map[uint32]string
 
-	count       int
-	blockBitmap map[uint32][]byte
+	count int
 }
 
 func (sc *deletedScan) emit(fn func(DeletedEntry) error, e DeletedEntry) error {
@@ -318,6 +336,14 @@ func (sc *deletedScan) emitUnclaimedSlack(fn func(DeletedEntry) error) error {
 
 // scanInodeTable walks every initialised inode table entry looking for
 // deletion evidence.
+// scanInodeTable walks every initialised inode table entry looking for
+// deletion evidence.
+//
+// Block groups are independent — each owns a disjoint span of the inode table —
+// so they are examined in parallel when the caller asked for it. Emission stays
+// sequential and in group order: the callback is invoked from the calling
+// goroutine only, so a caller never needs to synchronise it, and the output of
+// a parallel run is identical to a sequential one.
 func (sc *deletedScan) scanInodeTable(fn func(DeletedEntry) error) error {
 	fs := sc.fs
 	paths := sc.dirPaths
@@ -325,41 +351,23 @@ func (sc *deletedScan) scanInodeTable(fn func(DeletedEntry) error) error {
 		paths = fs.collectReachablePathsByInode()
 	}
 
-	for g := uint32(0); g < uint32(len(fs.groups)); g++ {
-		gd := fs.groups[g]
+	groups := len(fs.groups)
+	if groups == 0 {
+		return nil
+	}
 
-		usable := fs.usableInodesInGroup(gd)
-		if sc.opts.IncludeUninit {
-			usable = fs.sb.InodesPerGroup
-		}
-		if usable == 0 {
-			continue
-		}
+	// Each worker returns the entries it found; nothing is emitted from inside
+	// a worker, which is what keeps the callback single-threaded.
+	perGroup, err := parallelMap(sc.ctx, fs.effectiveParallelism(), groups,
+		func(ctx context.Context, i int) ([]DeletedEntry, error) {
+			return sc.scanGroup(ctx, uint32(i), paths)
+		})
+	if err != nil {
+		return err
+	}
 
-		base := g * fs.sb.InodesPerGroup
-		for i := uint32(0); i < usable; i++ {
-			num := base + i + 1
-			if num < fs.sb.FirstInode || num > fs.sb.InodesCount {
-				continue
-			}
-			if sc.seen[num] {
-				continue
-			}
-
-			inode, err := fs.ReadInode(num)
-			if err != nil {
-				continue
-			}
-			if !inode.Deleted() {
-				continue
-			}
-			// A reachable inode with links is live; only trust the deletion
-			// signal for something the tree no longer references.
-			if _, reachable := paths[num]; reachable && inode.LinksCount > 0 {
-				continue
-			}
-
-			entry := sc.describe(inode, DeletedSourceInodeTable)
+	for _, entries := range perGroup {
+		for _, entry := range entries {
 			sc.nameFor(&entry)
 			if err := sc.emit(fn, entry); err != nil {
 				return err
@@ -367,6 +375,62 @@ func (sc *deletedScan) scanInodeTable(fn func(DeletedEntry) error) error {
 		}
 	}
 	return nil
+}
+
+// scanGroup examines one block group's slice of the inode table.
+//
+// It reads and decodes but never emits, and touches no scan-wide state beyond
+// the read-only path index, so it is safe to run concurrently for distinct
+// groups.
+func (sc *deletedScan) scanGroup(ctx context.Context, g uint32, paths map[uint32]string) ([]DeletedEntry, error) {
+	fs := sc.fs
+	gd := fs.groups[g]
+
+	usable := fs.usableInodesInGroup(gd)
+	if sc.opts.IncludeUninit {
+		usable = fs.sb.InodesPerGroup
+	}
+	if usable == 0 {
+		return nil, nil
+	}
+
+	var (
+		found []DeletedEntry
+		base  = g * fs.sb.InodesPerGroup
+	)
+	for i := uint32(0); i < usable; i++ {
+		// Cancellation is checked per batch rather than per inode: the check is
+		// cheap but not free, and a group is already a bounded unit of work.
+		if i%cancellationCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+
+		num := base + i + 1
+		if num < fs.sb.FirstInode || num > fs.sb.InodesCount {
+			continue
+		}
+		if sc.seen[num] {
+			continue
+		}
+
+		inode, err := fs.ReadInode(num)
+		if err != nil {
+			continue
+		}
+		if !inode.Deleted() {
+			continue
+		}
+		// A reachable inode with links is live; only trust the deletion signal
+		// for something the tree no longer references.
+		if _, reachable := paths[num]; reachable && inode.LinksCount > 0 {
+			continue
+		}
+
+		found = append(found, sc.describe(inode, DeletedSourceInodeTable))
+	}
+	return found, nil
 }
 
 // scanOrphans reports inodes on the legacy chain and in the orphan file.
@@ -455,28 +519,8 @@ func (sc *deletedScan) judgeRecovery(exts []Extent) RecoveryConfidence {
 	return RecoveryLikely
 }
 
-// blockAllocated is BlockAllocated with the group bitmap cached for the scan.
+// blockAllocated defers to the FS-level bitmap cache, which is shared across
+// goroutines and so remains correct once a scan runs its groups in parallel.
 func (sc *deletedScan) blockAllocated(block uint64) (bool, error) {
-	fs := sc.fs
-	first := uint64(fs.sb.FirstDataBlock)
-	if block < first || (fs.sb.BlocksCount != 0 && block >= fs.sb.BlocksCount) {
-		return false, fmt.Errorf("%w: block %d outside the filesystem", ErrUnsupportedLayout, block)
-	}
-	rel := block - first
-	group := uint32(rel / uint64(fs.sb.BlocksPerGroup))
-	index := rel % uint64(fs.sb.BlocksPerGroup)
-
-	if sc.blockBitmap == nil {
-		sc.blockBitmap = make(map[uint32][]byte)
-	}
-	bitmap, ok := sc.blockBitmap[group]
-	if !ok {
-		var err error
-		bitmap, err = fs.BlockBitmap(group)
-		if err != nil {
-			return false, err
-		}
-		sc.blockBitmap[group] = bitmap
-	}
-	return bitTest(bitmap, index), nil
+	return sc.fs.BlockAllocated(block)
 }

@@ -45,6 +45,7 @@ const (
 	featureCompatDirIndex   = 0x0020
 	featureCompatOrphanFile = 0x1000
 
+	featureIncompatRecover  = 0x0004
 	featureIncompatFileType = 0x0002
 	featureIncompatExtents  = 0x0040
 	featureIncompat64Bit    = 0x0080
