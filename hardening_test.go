@@ -47,7 +47,7 @@ func defaultSBConfig() sbConfig {
 
 // buildTestImage renders cfg into a 1 MiB image with a zeroed group descriptor
 // table, which is enough for Open to succeed.
-func buildTestImage(t *testing.T, cfg sbConfig) []byte {
+func buildTestImage(t testing.TB, cfg sbConfig) []byte {
 	t.Helper()
 
 	img := make([]byte, 1<<20)
@@ -228,7 +228,7 @@ func TestOpenTruncatedImageWarns(t *testing.T) {
 // B4/B5/B7: feature gate
 // ---------------------------------------------------------------------------
 
-func lookupFeature(t *testing.T, flagType, name string) Feature {
+func lookupFeature(t testing.TB, flagType, name string) Feature {
 	t.Helper()
 	for _, f := range AllFeatures {
 		if f.FlagType == flagType && f.Name == name {
@@ -309,9 +309,9 @@ func TestOpenFeatureGate(t *testing.T) {
 			want: "META_BG",
 		},
 		{
-			name: "inline_data",
-			mod:  func(c *sbConfig) { c.incompat |= 0x8000 },
-			want: "INLINE_DATA",
+			name: "journal_dev",
+			mod:  func(c *sbConfig) { c.incompat |= 0x0008 },
+			want: "JOURNAL_DEV",
 		},
 	}
 

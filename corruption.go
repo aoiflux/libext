@@ -279,29 +279,16 @@ func (fs *FS) hasCircularRef(inodeNum uint32, visited map[uint32]bool, depth int
 // only for source compatibility. Use the deleted-inode enumeration API instead
 // once available.
 func (fs *FS) ScanForOrphanedInodes(maxInodesToCheck int) []uint32 {
-	var orphans []uint32
-
-	checkCount := 0
-	for i := uint32(fs.sb.FirstInode); i <= fs.sb.InodesCount && checkCount < maxInodesToCheck; i++ {
-		inode, err := fs.ReadInode(i)
-		if err != nil {
-			continue
-		}
-
-		// Skip deleted inodes
-		if inode.LinksCount == 0 {
-			continue
-		}
-
-		// Skip special inodes
-		if i == 2 { // root
-			continue
-		}
-
-		// Mark as potential orphan (full check would require directory tree traversal)
-		checkCount++
+	opts := DeletedScanOptions{
+		SkipDirSlack: true,
+		MaxResults:   maxInodesToCheck,
 	}
 
+	var orphans []uint32
+	_ = fs.ScanDeleted(opts, func(e DeletedEntry) error {
+		orphans = append(orphans, e.Inode)
+		return nil
+	})
 	return orphans
 }
 

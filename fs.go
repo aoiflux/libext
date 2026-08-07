@@ -3,7 +3,6 @@ package libext
 import (
 	"fmt"
 	"io"
-	"os"
 	"sync"
 )
 
@@ -28,79 +27,6 @@ type FS struct {
 	sb     Superblock
 	kind   FSKind
 	groups []GroupDescriptor
-}
-
-// Open creates an EXT parser from a random-access reader using default options.
-// The reader is probed for a Size or Stat method to establish bounds for every
-// subsequent read.
-func Open(r io.ReaderAt) (*FS, error) {
-	return OpenWithOptions(r, Options{})
-}
-
-// OpenWithSize creates an EXT parser from a random-access reader.
-// If imageSize is 0, bounds checks are skipped.
-//
-// Prefer OpenWithOptions, which probes the reader for its size instead of
-// leaving reads unbounded.
-func OpenWithSize(r io.ReaderAt, imageSize uint64) (*FS, error) {
-	return openWithOptions(r, Options{ImageSize: imageSize}, false)
-}
-
-// OpenWithOptions creates an EXT parser from a random-access reader.
-//
-// When opts.ImageSize is 0 the reader is probed for a Size() int64 or Stat()
-// method; if neither is present, reads are unbounded.
-func OpenWithOptions(r io.ReaderAt, opts Options) (*FS, error) {
-	return openWithOptions(r, opts, true)
-}
-
-func openWithOptions(r io.ReaderAt, opts Options, probe bool) (*FS, error) {
-	if r == nil {
-		return nil, fmt.Errorf("reader is nil")
-	}
-	if opts.ImageSize == 0 && probe {
-		opts.ImageSize = probeReaderSize(r)
-	}
-
-	fs := &FS{r: r, imageSize: opts.ImageSize, opts: opts}
-	if err := fs.loadSuperblock(); err != nil {
-		return nil, err
-	}
-	if err := fs.checkFeatures(); err != nil {
-		return nil, err
-	}
-	if err := fs.loadGroupDescriptors(); err != nil {
-		return nil, err
-	}
-	return fs, nil
-}
-
-// OpenFile opens an image path and parses its EXT metadata.
-func OpenFile(path string) (*FS, error) {
-	return OpenFileWithOptions(path, Options{})
-}
-
-// OpenFileWithOptions opens an image path with explicit options.
-func OpenFileWithOptions(path string, opts Options) (*FS, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if opts.ImageSize == 0 {
-		opts.ImageSize = uint64(fi.Size())
-	}
-	fs, err := OpenWithOptions(f, opts)
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	fs.closer = f
-	return fs, nil
 }
 
 func (fs *FS) Close() error {

@@ -68,14 +68,18 @@ func parseGroupDescriptor(buf []byte, group uint32) (GroupDescriptor, error) {
 		return GroupDescriptor{}, ErrUnsupportedLayout
 	}
 	gd := GroupDescriptor{
-		Group:            group,
-		BlockBitmapBlock: uint64(le32(buf, 0x00)),
-		InodeBitmapBlock: uint64(le32(buf, 0x04)),
-		InodeTableBlock:  uint64(le32(buf, 0x08)),
-		FreeBlocksCount:  uint32(le16(buf, 0x0C)),
-		FreeInodesCount:  uint32(le16(buf, 0x0E)),
-		UsedDirsCount:    uint32(le16(buf, 0x10)),
-		Flags:            le16(buf, 0x12),
+		Group:               group,
+		BlockBitmapBlock:    uint64(le32(buf, 0x00)),
+		InodeBitmapBlock:    uint64(le32(buf, 0x04)),
+		InodeTableBlock:     uint64(le32(buf, 0x08)),
+		FreeBlocksCount:     uint32(le16(buf, 0x0C)),
+		FreeInodesCount:     uint32(le16(buf, 0x0E)),
+		UsedDirsCount:       uint32(le16(buf, 0x10)),
+		Flags:               le16(buf, 0x12),
+		BlockBitmapChecksum: uint32(le16(buf, 0x18)),
+		InodeBitmapChecksum: uint32(le16(buf, 0x1A)),
+		ItableUnused:        uint32(le16(buf, 0x1C)),
+		Checksum:            le16(buf, 0x1E),
 	}
 
 	if len(buf) >= 64 {
@@ -85,6 +89,9 @@ func parseGroupDescriptor(buf []byte, group uint32) (GroupDescriptor, error) {
 		gd.FreeBlocksCount |= uint32(le16(buf, 0x2C)) << 16
 		gd.FreeInodesCount |= uint32(le16(buf, 0x2E)) << 16
 		gd.UsedDirsCount |= uint32(le16(buf, 0x30)) << 16
+		gd.ItableUnused |= uint32(le16(buf, 0x32)) << 16
+		gd.BlockBitmapChecksum |= uint32(le16(buf, 0x38)) << 16
+		gd.InodeBitmapChecksum |= uint32(le16(buf, 0x3A)) << 16
 	}
 
 	return gd, nil

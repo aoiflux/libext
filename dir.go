@@ -23,6 +23,11 @@ func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An inline directory uses a different layout: no "." or ".." records, and
+	// the first four bytes are the parent inode rather than a record header.
+	if inode.HasInline {
+		return fs.inlineDirEntries(inode, data)
+	}
 	return fs.parseDirEntries(data)
 }
 
@@ -107,6 +112,67 @@ func parseDirEntryAt(data []byte, off int, hasFileType bool) (DirEntry, int, err
 		Name:        string(data[off+8 : off+8+int(nameLen)]),
 		IsDirectory: hasFileType && fileType == extDirentTypeDirectory,
 	}, recLen, nil
+}
+
+// DirOptions controls how much per-entry detail a directory listing gathers.
+// The zero value matches ListDir: names and types only, one read for the whole
+// directory.
+type DirOptions struct {
+	// WithInodeMetadata fills Times, Mode, UID, GID, Size, IsDirectory and
+	// Deleted by reading each entry's inode. Costs one inode read per entry.
+	WithInodeMetadata bool
+
+	// IncludeDotEntries keeps "." and ".." in the result.
+	IncludeDotEntries bool
+}
+
+// ListDirEx lists a directory with per-entry detail controlled by opts.
+func (fs *FS) ListDirEx(inodeNum uint32, opts DirOptions) ([]DirEntry, error) {
+	entries, err := fs.ListDir(inodeNum)
+	if err != nil {
+		return entries, err
+	}
+	return fs.decorateEntries(entries, opts), nil
+}
+
+// ReadDirEx reads the directory with per-entry detail controlled by opts.
+func (f *File) ReadDirEx(opts DirOptions) ([]DirEntry, error) {
+	if !f.inode.IsDirectory {
+		return nil, ErrNotDirectory
+	}
+	return f.volume.ListDirEx(f.inode.Number, opts)
+}
+
+// decorateEntries applies DirOptions to a raw listing.
+func (fs *FS) decorateEntries(entries []DirEntry, opts DirOptions) []DirEntry {
+	out := entries[:0]
+	for _, e := range entries {
+		if !opts.IncludeDotEntries && (e.Name == "." || e.Name == "..") {
+			continue
+		}
+		if opts.WithInodeMetadata {
+			fs.fillEntryFromInode(&e)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// fillEntryFromInode copies inode-level detail onto a directory entry. Failures
+// are silent: an entry whose inode cannot be read is still a real name that was
+// present in the directory, and dropping it would lose evidence.
+func (fs *FS) fillEntryFromInode(e *DirEntry) {
+	inode, err := fs.ReadInode(e.Inode)
+	if err != nil {
+		return
+	}
+	e.IsDirectory = inode.IsDirectory
+	e.Size = inode.Size
+	e.Times = inode.Timestamps()
+	e.Mode = inode.Mode
+	e.UID = inode.UID
+	e.GID = inode.GID
+	e.Deleted = inode.Deleted()
 }
 
 func (fs *FS) LookupPath(p string) (DirEntry, error) {

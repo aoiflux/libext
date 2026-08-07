@@ -44,9 +44,9 @@ type Options struct {
 type WarningCode uint8
 
 const (
-	// WarnUnknownFeature reports a feature bit this version does not describe.
+	// WarnUnknownFeature reports a feature bit libext does not describe.
 	WarnUnknownFeature WarningCode = iota + 1
-	// WarnUnsupportedFeature reports a known feature this version cannot honour.
+	// WarnUnsupportedFeature reports a known feature libext cannot honour.
 	WarnUnsupportedFeature
 	// WarnChecksumMismatch reports metadata whose stored checksum did not verify.
 	WarnChecksumMismatch

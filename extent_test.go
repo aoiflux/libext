@@ -38,7 +38,7 @@ func pointerBlock(ptrs ...uint32) []byte {
 	return b
 }
 
-func openFixture(t *testing.T, img []byte, opts Options) *FS {
+func openFixture(t testing.TB, img []byte, opts Options) *FS {
 	t.Helper()
 	fs, err := OpenWithOptions(bytes.NewReader(img), opts)
 	if err != nil {
@@ -49,7 +49,7 @@ func openFixture(t *testing.T, img []byte, opts Options) *FS {
 
 // assertExtents compares against the full expected map, so a change in
 // normalization cannot pass unnoticed.
-func assertExtents(t *testing.T, got, want []Extent) {
+func assertExtents(t testing.TB, got, want []Extent) {
 	t.Helper()
 	if len(got) != len(want) {
 		t.Fatalf("got %d extents, want %d\n got: %+v\nwant: %+v", len(got), len(want), got, want)

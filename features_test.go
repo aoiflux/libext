@@ -134,12 +134,14 @@ func TestDescribeFeatures(t *testing.T) {
 
 // TestFindUnsupportedFeatures tests unsupported features detection.
 func TestFindUnsupportedFeatures(t *testing.T) {
-	// COMPRESSION (0x0001) is unsupported, INLINE_DATA (0x8000) is unsupported
-	flags := uint32(0x0001 | 0x8000)
+	// COMPRESSION (0x0001) and JOURNAL_DEV (0x0008) are both unsupported.
+	// INLINE_DATA is deliberately not used here: it is now supported.
+	flags := uint32(0x0001 | 0x0008)
 	unsupported := findUnsupportedFeatures(flags, "incompat")
 
 	if len(unsupported) != 2 {
-		t.Errorf("findUnsupportedFeatures: expected 2 features, got %d", len(unsupported))
+		t.Errorf("findUnsupportedFeatures: expected 2 features, got %d: %v",
+			len(unsupported), unsupported)
 	}
 }
 

@@ -41,6 +41,10 @@ func (fs *FS) loadSuperblock() error {
 	sb.LastOrphan = le32(buf, 0xE8)
 	sb.DescSize = le16(buf, 0xFE)
 	sb.ChecksumSeed = le32(buf, 0x270)
+	// s_orphan_file_inum sits at 0x280, after the four *_hi time bytes and the
+	// encoding fields. Confirmed against a filesystem whose neighbouring
+	// s_overhead_clusters and s_checksum_seed both match dumpe2fs.
+	sb.OrphanFileInode = le32(buf, 0x280)
 
 	if sb.Magic != extMagic {
 		return ErrInvalidSuperblock
@@ -102,6 +106,16 @@ func (fs *FS) loadSuperblock() error {
 			ErrInvalidSuperblock, groups, maxBlockGroups)
 	}
 	sb.GroupsCount = uint32(groups)
+
+	// The inode table is allocated per group, so the total inode count cannot
+	// exceed what the groups actually hold. Without this, a crafted superblock
+	// can claim billions of inodes on a tiny image and make any full-table scan
+	// run effectively forever — the same exhaustion as an oversized group count,
+	// spent in time rather than memory.
+	if capacity := groups * uint64(sb.InodesPerGroup); uint64(sb.InodesCount) > capacity {
+		return fmt.Errorf("%w: %d inodes exceeds the %d its %d groups can hold",
+			ErrInvalidSuperblock, sb.InodesCount, capacity, groups)
+	}
 
 	if sb.BlockSize == 1024 {
 		sb.GroupDescTableOff = 2 * 1024

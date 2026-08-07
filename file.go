@@ -121,6 +121,9 @@ func (f *File) ReadLink() (string, error) {
 }
 
 // ReadDir reads directory entries from a directory inode.
+//
+// Each entry's inode is read to resolve its type and size, so the timestamps,
+// mode, ownership and deleted state come along at no additional cost.
 func (f *File) ReadDir() ([]DirEntry, error) {
 	if !f.inode.IsDirectory {
 		return nil, ErrNotDirectory
@@ -130,13 +133,14 @@ func (f *File) ReadDir() ([]DirEntry, error) {
 		return nil, err
 	}
 	for i := range entries {
-		child, err := f.volume.ReadInode(entries[i].Inode)
-		if err == nil {
-			entries[i].IsDirectory = child.IsDirectory
-			entries[i].Size = child.Size
-		}
+		f.volume.fillEntryFromInode(&entries[i])
 	}
 	return entries, nil
+}
+
+// Timestamps returns the file's full MACB set.
+func (f *File) Timestamps() Timestamps {
+	return f.inode.Timestamps()
 }
 
 func (fs *FS) ReadFile(inodeNum uint32) ([]byte, error) {
@@ -150,12 +154,37 @@ func (fs *FS) ReadFile(inodeNum uint32) ([]byte, error) {
 	return fs.readInodeData(inode)
 }
 
+// defaultReadAllLimit caps a whole-inode read when the image size is unknown.
+const defaultReadAllLimit = 1 << 30
+
+// readAllLimit bounds how much a single whole-inode read may allocate.
+//
+// The image size is the real bound: an inode cannot hold more bytes than the
+// filesystem it lives in. A corrupt or crafted size field otherwise turns one
+// read into a gigabyte allocation and a million block lookups.
+func (fs *FS) readAllLimit() uint64 {
+	limit := uint64(defaultReadAllLimit)
+	if fs.imageSize > 0 && fs.imageSize < limit {
+		limit = fs.imageSize
+	}
+	return limit
+}
+
 func (fs *FS) readInodeData(inode Inode) ([]byte, error) {
 	if inode.Size == 0 {
 		return []byte{}, nil
 	}
-	if inode.Size > (1 << 30) {
-		return nil, fmt.Errorf("inode %d too large: %d bytes", inode.Number, inode.Size)
+	// An inline inode owns no blocks; its contents live in the inode itself.
+	if inode.HasInline {
+		raw, err := fs.readInodeRaw(inode.Number)
+		if err != nil {
+			return nil, err
+		}
+		return fs.inlineDataFromRaw(inode, raw)
+	}
+	if limit := fs.readAllLimit(); inode.Size > limit {
+		return nil, fmt.Errorf("inode %d too large to read whole: %d bytes exceeds the %d byte limit",
+			inode.Number, inode.Size, limit)
 	}
 	buf := make([]byte, inode.Size)
 	_, err := fs.readInodeDataAt(inode, 0, buf)

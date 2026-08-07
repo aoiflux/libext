@@ -40,10 +40,10 @@ filesystem-object model instead of lower-level block parsing primitives.
 go get github.com/aoiflux/libext
 ```
 
-## Go Version
+## Requirements
 
-The module currently declares Go `1.25` in [go.mod](go.mod). Use Go 1.25 or
-newer when building or testing the project.
+The toolchain requirement is declared in [go.mod](go.mod); use that Go release
+or newer when building or testing the project.
 
 ## Quick Start
 

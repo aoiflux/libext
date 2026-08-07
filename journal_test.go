@@ -6,16 +6,23 @@ import (
 )
 
 // TestParseJournalSuperblockValid tests parsing a valid journal superblock.
+//
+// The fields sit after the 12-byte journal header. This fixture previously wrote
+// them eight bytes early, matching a parser that read them from the same wrong
+// offsets, so every value it reported from a real journal was another field.
 func TestParseJournalSuperblockValid(t *testing.T) {
 	data := make([]byte, 256)
 
-	// Set fields
-	binary.BigEndian.PutUint32(data[4:8], 4096)   // BlockSize
-	binary.BigEndian.PutUint32(data[8:12], 100)   // MaxLen
-	binary.BigEndian.PutUint32(data[12:16], 0)    // FirstBlock
-	binary.BigEndian.PutUint32(data[16:20], 1)    // Sequence
-	binary.BigEndian.PutUint32(data[28:32], 0x01) // CompatFeatures
-	copy(data[40:56], "test-uuid-1234567")
+	binary.BigEndian.PutUint32(data[0:4], journalMagic)
+	binary.BigEndian.PutUint32(data[4:8], JournalBlockTypeSuperblockV2)
+
+	binary.BigEndian.PutUint32(data[12:16], 4096) // s_blocksize
+	binary.BigEndian.PutUint32(data[16:20], 100)  // s_maxlen
+	binary.BigEndian.PutUint32(data[20:24], 1)    // s_first
+	binary.BigEndian.PutUint32(data[24:28], 1)    // s_sequence
+	binary.BigEndian.PutUint32(data[28:32], 0)    // s_start
+	binary.BigEndian.PutUint32(data[40:44], journalIncompatCSumV3)
+	copy(data[48:64], "test-uuid-1234567")
 
 	jsb, err := ParseJournalSuperblock(data)
 	if err != nil {
@@ -32,6 +39,26 @@ func TestParseJournalSuperblockValid(t *testing.T) {
 
 	if jsb.Sequence != 1 {
 		t.Errorf("expected Sequence 1, got %d", jsb.Sequence)
+	}
+
+	if jsb.FirstBlock != 1 {
+		t.Errorf("expected FirstBlock 1, got %d", jsb.FirstBlock)
+	}
+
+	if !jsb.HasCSumV3() {
+		t.Error("expected the v3 checksum feature to be detected")
+	}
+}
+
+// TestParseJournalSuperblockRejectsBadMagic guards the constant itself: it was
+// 0xC0B1A001, which matches nothing, so journal parsing silently found no
+// blocks at all on every real filesystem.
+func TestParseJournalSuperblockRejectsBadMagic(t *testing.T) {
+	data := make([]byte, 256)
+	binary.BigEndian.PutUint32(data[0:4], 0xC0B1A001)
+
+	if _, err := ParseJournalSuperblock(data); err == nil {
+		t.Error("expected an error for a block without the JBD2 magic")
 	}
 }
 
@@ -96,20 +123,22 @@ func TestJournalFeatureDetection(t *testing.T) {
 			expectAsync:   false,
 		},
 		{
-			name:          "with_recovery",
+			// 0x0001 in the compat set is DIR_PREALLOC, not a recovery flag.
+			name:          "compat_bit_one_is_not_recovery",
 			compatFlags:   0x0001 | 0x0004,
 			incompat:      0,
 			expectJournal: true,
-			expectRecov:   true,
+			expectRecov:   false,
 			expectAsync:   false,
 		},
 		{
-			name:          "with_async_commit",
+			// Recovery is an incompat flag (RECOVER, 0x0004), not a compat one.
+			name:          "with_recovery_incompat",
 			compatFlags:   0x0004,
-			incompat:      0x0200,
+			incompat:      0x0004,
 			expectJournal: true,
-			expectRecov:   false,
-			expectAsync:   true,
+			expectRecov:   true,
+			expectAsync:   false,
 		},
 	}
 
@@ -132,8 +161,11 @@ func TestJournalFeatureDetection(t *testing.T) {
 				t.Errorf("needs_recovery: expected %v, got %v", tc.expectRecov, features["needs_recovery"])
 			}
 
-			if features["journal_async_commit"] != tc.expectAsync {
-				t.Errorf("journal_async_commit: expected %v, got %v", tc.expectAsync, features["journal_async_commit"])
+			// journal_async_commit lives in the journal's own superblock, which
+			// this fixture has no way to read, so it must simply be absent
+			// rather than derived from an unrelated filesystem flag.
+			if got, ok := features["journal_async_commit"]; ok && got != tc.expectAsync {
+				t.Errorf("journal_async_commit: expected %v, got %v", tc.expectAsync, got)
 			}
 		})
 	}
@@ -172,28 +204,30 @@ func TestGetJournalInode(t *testing.T) {
 func TestJournalBlockTypes(t *testing.T) {
 	tests := []struct {
 		blockType uint32
+		expected  uint32
 		name      string
 	}{
-		{JournalBlockTypeSuperblock, "superblock"},
-		{JournalBlockTypeDescriptor, "descriptor"},
-		{JournalBlockTypeCommit, "commit"},
-		{JournalBlockTypeOrphan, "orphan"},
-		{JournalBlockTypeEscaped, "escaped"},
+		{JournalBlockTypeDescriptor, 1, "descriptor"},
+		{JournalBlockTypeCommit, 2, "commit"},
+		{JournalBlockTypeSuperblockV1, 3, "superblock v1"},
+		{JournalBlockTypeSuperblockV2, 4, "superblock v2"},
+		{JournalBlockTypeRevoke, 5, "revoke"},
 	}
 
-	expected := []uint32{0, 1, 2, 3, 4}
-
-	for i, tc := range tests {
-		if tc.blockType != expected[i] {
-			t.Errorf("%s: expected %d, got %d", tc.name, expected[i], tc.blockType)
+	for _, tc := range tests {
+		if tc.blockType != tc.expected {
+			t.Errorf("%s: expected %d, got %d", tc.name, tc.expected, tc.blockType)
 		}
 	}
 }
 
-// TestJournalMagic tests magic number constant.
+// TestJournalMagic pins the JBD2 header magic.
+//
+// It was 0xC0B1A001 here and in the parser, so no journal block ever matched
+// and transaction enumeration always returned an empty list.
 func TestJournalMagic(t *testing.T) {
-	if journalMagic != 0xC0B1A001 {
-		t.Errorf("expected magic 0xC0B1A001, got 0x%08x", journalMagic)
+	if journalMagic != 0xC03B3998 {
+		t.Errorf("expected JBD2_MAGIC_NUMBER 0xC03B3998, got 0x%08x", journalMagic)
 	}
 }
 

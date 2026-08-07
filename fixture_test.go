@@ -45,9 +45,17 @@ func TestFeatureCompatibility(t *testing.T) {
 			shouldErr: true,
 		},
 		{
-			name:      "unsupported incompat INLINE_DATA",
+			// Inline data is supported, so it must no longer block Open.
+			name:      "supported incompat INLINE_DATA",
 			compat:    0,
 			incompat:  0x8000, // INLINE_DATA
+			rocompat:  0,
+			shouldErr: false,
+		},
+		{
+			name:      "unsupported incompat JOURNAL_DEV",
+			compat:    0,
+			incompat:  0x0008, // JOURNAL_DEV
 			rocompat:  0,
 			shouldErr: true,
 		},

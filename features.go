@@ -230,10 +230,10 @@ var AllFeatures = []Feature{
 	},
 	{
 		Name:        "INLINE_DATA",
-		Description: "Inline data in inode",
+		Description: "Small file and directory contents stored in the inode",
 		FlagType:    "incompat",
 		FlagValue:   0x8000,
-		Status:      FeatureStatusUnsupported,
+		Status:      FeatureStatusSupported,
 	},
 	{
 		Name:        "ENCRYPT",
@@ -413,9 +413,9 @@ func knownFeatureMask(flagType string) uint32 {
 	return mask
 }
 
-// UnknownFeatureBits returns the enabled bits in a feature set that this version
-// does not describe. An unknown incompat bit means the on-disk layout may differ
-// in ways the parser cannot detect.
+// UnknownFeatureBits returns the enabled bits in a feature set that libext does
+// not describe. An unknown incompat bit means the on-disk layout may differ in
+// ways the parser cannot detect.
 func (fs *FS) UnknownFeatureBits(flagType string) uint32 {
 	return fs.flagsFor(flagType) &^ knownFeatureMask(flagType)
 }
@@ -438,7 +438,7 @@ func (fs *FS) BlockingFeatures() []Feature {
 // CheckRequiredFeatures validates that required features are supported.
 //
 // It returns an error when an unsupported incompat feature is set, when a
-// feature marked Blocking is set, or when an incompat bit this version does not
+// feature marked Blocking is set, or when an incompat bit libext does not
 // recognise is set. The last case matters most: an unrecognised incompat bit
 // means the layout may differ in ways the parser cannot detect, so answering at
 // all would be answering wrongly.
@@ -474,9 +474,12 @@ func (fs *FS) checkFeatures() error {
 	for _, fname := range findUnsupportedFeatures(fs.sb.FeatureCompat, "compat") {
 		fs.warn(WarnUnsupportedFeature, "compat:"+fname, "feature is not interpreted")
 	}
-	if (fs.sb.FeatureIncompat & featureIncompatCSumSeed) != 0 {
+	// s_checksum_seed is honoured when present. Warn only when the feature is
+	// claimed but no seed was stored, since checksums would then be verified
+	// against the volume UUID and report mismatches for every structure.
+	if (fs.sb.FeatureIncompat&featureIncompatCSumSeed) != 0 && fs.sb.ChecksumSeed == 0 {
 		fs.warn(WarnChecksumMismatch, "incompat:CSUM_SEED",
-			"checksums are seeded from s_checksum_seed; verification against the volume UUID may report false mismatches")
+			"CSUM_SEED is set but s_checksum_seed is zero; falling back to the volume UUID may report false mismatches")
 	}
 
 	if err := fs.CheckRequiredFeatures(); err != nil {

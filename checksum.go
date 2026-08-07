@@ -151,66 +151,62 @@ func inodeHasChecksumHi(raw []byte) bool {
 	return 128+extra >= 0x84
 }
 
-// VerifyBlockBitmapChecksum validates the block bitmap checksum for a group.
-// The checksum is stored in the group descriptor and computed from the bitmap data.
+// bitmapChecksumWidth reports how many bits of a bitmap checksum are stored.
+// The high half of the field exists only in a 64-bit group descriptor.
+func (fs *FS) bitmapChecksumWidth() uint32 {
+	if fs.sb.GroupDescSize >= 64 {
+		return 32
+	}
+	return 16
+}
+
+// verifyBitmapChecksum compares a stored bitmap checksum against the data.
+func (fs *FS) verifyBitmapChecksum(group uint32, stored uint32, data []byte, kind string) error {
+	calc := extCRC32C(fs.csumSeed(), data)
+	if fs.bitmapChecksumWidth() == 16 {
+		calc &= 0xFFFF
+		stored &= 0xFFFF
+	}
+	if stored != calc {
+		return fmt.Errorf("%w: group=%d %s bitmap stored=0x%08x calc=0x%08x",
+			ErrChecksumMismatch, group, kind, stored, calc)
+	}
+	return nil
+}
+
+// VerifyBlockBitmapChecksum validates a group's block bitmap against the
+// checksum stored in its descriptor.
+//
+// blockBitmapData must be the bitmap as BlockBitmap returns it: BlocksPerGroup
+// bits, which is usually shorter than the block holding it. Checksumming the
+// whole block instead folds in trailing padding and never matches.
 func (fs *FS) VerifyBlockBitmapChecksum(group uint32, blockBitmapData []byte) error {
 	if !fs.shouldValidateMetadataChecksums() {
 		return nil
 	}
-	if group >= uint32(len(fs.groups)) {
-		return fmt.Errorf("invalid group %d", group)
+	gd, err := fs.group(group)
+	if err != nil {
+		return err
 	}
-
-	gd := fs.groups[group]
-	stored := uint32(gd.Flags) // Simplified: in ext4, checksum is in osd2 fields
-	// Note: Real implementation would extract from group descriptor extra fields
-
-	h := crc32.New(extCRC32CTable)
-	_, _ = h.Write(fs.sb.UUID[:])
-	g := make([]byte, 4)
-	binary.LittleEndian.PutUint32(g, group)
-	_, _ = h.Write(g)
-	_, _ = h.Write(blockBitmapData)
-
-	calc := h.Sum32()
-
-	// For now, we skip actual checksum comparison since group descriptor
-	// layout varies by ext version. This function serves as a hook
-	// for future implementation when full ext4 group descriptor parsing is done.
-	_ = stored
-	_ = calc
-
-	return nil
+	if gd.BlockUninit() {
+		return nil
+	}
+	return fs.verifyBitmapChecksum(group, gd.BlockBitmapChecksum, blockBitmapData, "block")
 }
 
-// VerifyInodeBitmapChecksum validates the inode bitmap checksum for a group.
-// Similar to block bitmap but for inode bitmap.
+// VerifyInodeBitmapChecksum validates a group's inode bitmap against the
+// checksum stored in its descriptor. See VerifyBlockBitmapChecksum for the
+// expected extent of inodeBitmapData.
 func (fs *FS) VerifyInodeBitmapChecksum(group uint32, inodeBitmapData []byte) error {
 	if !fs.shouldValidateMetadataChecksums() {
 		return nil
 	}
-	if group >= uint32(len(fs.groups)) {
-		return fmt.Errorf("invalid group %d", group)
+	gd, err := fs.group(group)
+	if err != nil {
+		return err
 	}
-
-	gd := fs.groups[group]
-	stored := uint32(gd.Flags) // Simplified: in ext4, checksum is in osd2 fields
-	// Note: Real implementation would extract from group descriptor extra fields
-
-	h := crc32.New(extCRC32CTable)
-	_, _ = h.Write(fs.sb.UUID[:])
-	g := make([]byte, 4)
-	binary.LittleEndian.PutUint32(g, group)
-	_, _ = h.Write(g)
-	_, _ = h.Write(inodeBitmapData)
-
-	calc := h.Sum32()
-
-	// For now, we skip actual checksum comparison since group descriptor
-	// layout varies by ext version. This function serves as a hook
-	// for future implementation when full ext4 group descriptor parsing is done.
-	_ = stored
-	_ = calc
-
-	return nil
+	if gd.InodeUninit() {
+		return nil
+	}
+	return fs.verifyBitmapChecksum(group, gd.InodeBitmapChecksum, inodeBitmapData, "inode")
 }

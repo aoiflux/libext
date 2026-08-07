@@ -131,6 +131,27 @@ func TestSuperblockChecksumCoversOnlyPrecedingBytes(t *testing.T) {
 	}
 }
 
+// TestChecksumSeedIsHonoured pins the CSUM_SEED path: when the filesystem
+// stores a seed, checksums must be keyed on it rather than on the volume UUID.
+func TestChecksumSeedIsHonoured(t *testing.T) {
+	fs := &FS{sb: Superblock{
+		FeatureROCompat: featureRoCompatMetadataCS,
+		FeatureIncompat: featureIncompatCSumSeed,
+		ChecksumSeed:    0x806ce908,
+	}}
+	copy(fs.sb.UUID[:], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+
+	if got := fs.csumSeed(); got != 0x806ce908 {
+		t.Errorf("csumSeed = 0x%08x, want the stored seed 0x806ce908", got)
+	}
+
+	// Without the feature, the seed is derived from the UUID.
+	fs.sb.FeatureIncompat = 0
+	if got := fs.csumSeed(); got != extCRC32C(crc32cInit, fs.sb.UUID[:]) {
+		t.Errorf("csumSeed = 0x%08x, want the UUID-derived seed", got)
+	}
+}
+
 // TestVerifyChecksumsOptionAcceptsAValidImage guards the option end to end: it
 // was unusable, because a correct image always failed to open.
 func TestVerifyChecksumsOptionAcceptsAValidImage(t *testing.T) {

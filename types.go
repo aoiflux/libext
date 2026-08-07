@@ -41,7 +41,9 @@ const (
 
 const (
 	featureCompatHasJournal = 0x0004
+	featureCompatExtAttr    = 0x0008
 	featureCompatDirIndex   = 0x0020
+	featureCompatOrphanFile = 0x1000
 
 	featureIncompatFileType = 0x0002
 	featureIncompatExtents  = 0x0040
@@ -88,10 +90,23 @@ type Superblock struct {
 	JournalDevice     uint32
 	LastOrphan        uint32
 	ChecksumSeed      uint32 // s_checksum_seed; meaningful only with CSUM_SEED
+	OrphanFileInode   uint32 // s_orphan_file_inum; meaningful only with ORPHAN_FILE
 	GroupsCount       uint32
 	GroupDescSize     uint16
 	GroupDescTableOff uint64
 }
+
+// Block group descriptor flags.
+const (
+	// GroupInodeUninit marks a group whose inode bitmap and table have never
+	// been initialised. Its inode table holds whatever was on the disk before,
+	// so scanning it yields phantom entries rather than deleted files.
+	GroupInodeUninit uint16 = 0x1
+	// GroupBlockUninit marks a group whose block bitmap is not initialised.
+	GroupBlockUninit uint16 = 0x2
+	// GroupInodeZeroed marks a group whose inode table has been zeroed.
+	GroupInodeZeroed uint16 = 0x4
+)
 
 // GroupDescriptor represents one block group descriptor.
 type GroupDescriptor struct {
@@ -103,29 +118,98 @@ type GroupDescriptor struct {
 	FreeInodesCount  uint32
 	UsedDirsCount    uint32
 	Flags            uint16
+
+	// ItableUnused counts inodes at the tail of this group's inode table that
+	// have never been used. Everything from InodesPerGroup-ItableUnused onward
+	// is uninitialised, so a deleted-inode scan must stop there.
+	ItableUnused uint32
+
+	// Checksum is the descriptor's own checksum; BlockBitmapChecksum and
+	// InodeBitmapChecksum cover the two bitmaps this group owns.
+	Checksum            uint16
+	BlockBitmapChecksum uint32
+	InodeBitmapChecksum uint32
 }
+
+// InodeUninit reports whether this group's inode table is uninitialised.
+func (g GroupDescriptor) InodeUninit() bool { return g.Flags&GroupInodeUninit != 0 }
+
+// BlockUninit reports whether this group's block bitmap is uninitialised.
+func (g GroupDescriptor) BlockUninit() bool { return g.Flags&GroupBlockUninit != 0 }
 
 // Inode is a normalized inode view.
 type Inode struct {
-	Number      uint32
-	Mode        uint16
-	UID         uint32
-	GID         uint32
-	Size        uint64
-	Atime       time.Time
-	Ctime       time.Time
-	Mtime       time.Time
-	Dtime       time.Time
-	LinksCount  uint16
-	Blocks512   uint64
-	Flags       uint32
-	Generation  uint32
-	FileACL     uint64
-	BlockRaw    [60]byte
+	Number uint32
+	Mode   uint16
+	UID    uint32
+	GID    uint32
+	Size   uint64
+
+	// Atime, Ctime and Mtime carry nanosecond precision and dates beyond 2038
+	// when the inode is large enough to hold the extra words; check ExtraISize.
+	Atime time.Time
+	Ctime time.Time
+	Mtime time.Time
+
+	// Dtime is the deletion time, and is always whole seconds. It is zero for a
+	// live inode, so a non-zero Dtime is itself evidence of deletion.
+	//
+	// One exception matters: while an inode sits on the legacy orphan list, ext4
+	// reuses this field to hold the *inode number* of the next orphan rather
+	// than a timestamp. DtimeRaw preserves the undecoded value for that case.
+	Dtime    time.Time
+	DtimeRaw uint32
+
+	// Crtime is the creation ("birth") time. It exists only on ext4 inodes large
+	// enough to store it; HasCrtime reports whether it was present.
+	Crtime    time.Time
+	HasCrtime bool
+
+	LinksCount uint16
+
+	// Blocks512 counts 512-byte sectors unless HugeFile is set, in which case it
+	// counts filesystem blocks.
+	Blocks512  uint64
+	Flags      uint32
+	Generation uint32
+	FileACL    uint64
+	ExtraISize uint16
+	ProjectID  uint32
+	BlockRaw   [60]byte
+
 	HasExtents  bool
+	HasInline   bool
+	HugeFile    bool
 	IsDirectory bool
 	IsRegular   bool
 	IsSymlink   bool
+}
+
+// Timestamps groups an inode's times. Dtime is zero unless the inode was
+// deleted, and Crtime is zero unless the inode was large enough to record it.
+type Timestamps struct {
+	Atime  time.Time
+	Mtime  time.Time
+	Ctime  time.Time
+	Crtime time.Time
+	Dtime  time.Time
+}
+
+// Timestamps returns the inode's full MACB set.
+func (i Inode) Timestamps() Timestamps {
+	return Timestamps{
+		Atime:  i.Atime,
+		Mtime:  i.Mtime,
+		Ctime:  i.Ctime,
+		Crtime: i.Crtime,
+		Dtime:  i.Dtime,
+	}
+}
+
+// Deleted reports whether the inode carries evidence of deletion: a deletion
+// time, or no remaining links.
+func (i Inode) Deleted() bool {
+	return !i.Dtime.IsZero() || (i.LinksCount == 0 && i.Mode != 0)
 }
 
 // DirEntry is a parsed directory entry.
@@ -137,4 +221,12 @@ type DirEntry struct {
 	FileType    uint8
 	IsDirectory bool
 	Size        uint64
+
+	// The fields below are populated only by ListDirEx, ReadDirEx, and ReadDir,
+	// which read each entry's inode. They are zero from ListDir, which does not.
+	Times   Timestamps
+	Mode    uint16
+	UID     uint32
+	GID     uint32
+	Deleted bool
 }
