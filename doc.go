@@ -35,8 +35,9 @@
 //	binary decoding    util.go, layout.go   — offsets, endianness, bounds
 //	structure decoding superblock.go, group.go, inode.go, dir.go, blockmap.go,
 //	                   xattr.go, journal.go — on-disk structures to Go types
-//	analysis           extent.go, deleted.go, dirslack.go, orphan.go,
-//	                   report.go            — questions asked of those types
+//	analysis           extent.go, deleted.go, dirslack.go, orphan.go, path.go,
+//	                   journalindex.go, report.go
+//	                                        — questions asked of those types
 //
 // Entry points live in ext.go. On-disk structures are plain data: they carry no
 // behaviour beyond small accessors over their own fields, so decoding can be
@@ -47,10 +48,18 @@
 // An *FS is safe for concurrent use by any number of goroutines. Everything a
 // read touches is either immutable after Open — the superblock, the group
 // descriptors, the options — or individually synchronised: the closed flag is
-// atomic, the warning list is mutex-guarded, and the allocation bitmap cache
-// uses an RWMutex over entries that never change once read. Close may be called
-// while reads are in flight; those reads return io.ErrClosedPipe rather than
-// reading through a closed handle.
+// atomic, the warning list is mutex-guarded, and both caches — the allocation
+// bitmaps and the resolved journal block list — use an RWMutex over entries that
+// never change once read. Close may be called while reads are in flight; those
+// reads return io.ErrClosedPipe rather than reading through a closed handle.
+//
+// A *PathIndex and a *JournalIndex are each safe for concurrent use once built,
+// because nothing writes to them afterwards. Both are deliberately owned by the
+// caller rather than cached on the FS: an index over a multi-million-inode
+// volume or a gigabyte journal is large, and the FS holds no unbounded state of
+// its own. A JournalIndex reads through the FS it was built from when queried,
+// so that FS must still be open; a query after Close fails as any other read
+// does.
 //
 // A *File is not safe for concurrent use. It carries a seek offset and caches
 // its block map, so sharing one would be sharing mutable state for no gain.
@@ -78,12 +87,37 @@
 //     configured count regardless of how many items there are, and every worker
 //     is joined before the call returns.
 //
-// The ...Context variants accept cancellation. A full inode-table scan over a
-// large image is slow enough to want interrupting:
+// # Cancellation
+//
+// Every whole-image operation has a ...Context variant that accepts
+// cancellation. A full inode-table scan, a tree walk, or a pass over a 1 GiB
+// journal is slow enough to want interrupting:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 //	defer cancel()
 //	err := vol.ScanDeletedContext(ctx, libext.DeletedScanOptions{}, handle)
+//
+// The set is WalkDirContext, WalkDirWithInodeContext, BuildPathIndexContext,
+// PathForContext, ScanDeletedContext, DeletedEntriesContext,
+// DeletedEntriesWithOptionsContext, ScanDirSlackContext, OrphanInodesContext,
+// ListJournalTransactionsContext, BuildJournalIndexContext,
+// JournalBlockCopiesContext, JournalInodeVersionsContext,
+// ReportWithOptionsContext and WriteReportWithOptionsContext. The plain form of
+// each is a one-line delegate passing context.Background().
+//
+// Three rules hold across all of them. A nil context is an error rather than a
+// panic or a silent default. A cancelled context yields ctx.Err() unchanged, so
+// errors.Is(err, context.Canceled) works. And the check itself is paced — every
+// cancellationCheckInterval iterations, over a counter that spans the whole
+// operation rather than resetting per directory or per group, and tested before
+// that counter advances so an already-cancelled context is caught on the first
+// iteration rather than the thousandth.
+//
+// Operations that are bounded by construction have no Context form, because
+// there is nothing in them worth interrupting: FastCommitOps, the O(1) journal
+// accessors, the one-line Report/WriteReport wrappers, and every query on a
+// built PathIndex or JournalIndex — the traversal those were worth cancelling
+// during happened when the index was built.
 //
 // # Reading damaged images
 //

@@ -145,8 +145,11 @@ func (fs *FS) EnhancedListDir(inodeNum uint32) ([]DirEntry, error) {
 			return nil, err
 		}
 
-		// Parse all directory entries (HTree indexes but same linear format for entries)
-		return fs.parseDirEntries(data)
+		// Parse all directory entries (HTree indexes but same linear format for entries).
+		// This is the one listing path that does not go through ListDir, so it has
+		// to record the containing directory itself.
+		entries, err := fs.parseDirEntries(data)
+		return stampParent(entries, inodeNum), err
 	}
 
 	// Linear directory - use existing logic

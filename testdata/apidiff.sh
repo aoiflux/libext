@@ -49,7 +49,10 @@ git archive "$BASE" | (mkdir -p "$WORK/base" && tar -x -C "$WORK/base") || {
 }
 
 echo "baseline: $BASE"
-apidiff -w "$WORK/old.api" "$WORK/base" 2>/dev/null || {
+# Read the baseline from inside the exported tree. apidiff resolves a directory
+# argument against the module of the current directory, so pointing it at the
+# export from here reports it as outside the main module.
+(cd "$WORK/base" && apidiff -w "$WORK/old.api" .) || {
 	echo "could not read baseline API" >&2
 	exit 1
 }

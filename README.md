@@ -109,14 +109,17 @@ Implemented or available now:
   inodes, block bitmaps, and inode bitmaps
 - Extended attribute parsing
 - Journal status reporting and transaction enumeration
+- Journalled block and inode recovery, directly or through a `JournalIndex`
+- Fast commit record parsing, including the unlink records that often hold the
+  only surviving name of a recently deleted file
+- Inline data: files and directories stored inside the inode and its extended
+  attribute area
 - Corruption and integrity helper APIs
 
 Not fully supported yet:
 
-- Fast commit
 - Compression
-- Journal devices
-- Inline data
+- External journal devices (detected, not read)
 - Encryption
 - Snapshot support
 - Some partially supported optional and recovery-related features
@@ -144,6 +147,25 @@ Opening and traversal:
 - `(*FS).ListDir(inodeNum uint32) ([]DirEntry, error)`
 - `(*FS).LookupPath(p string) (DirEntry, error)`
 - `(*FS).WalkDir(startInode uint32, fn func(p string, entry DirEntry) error) error`
+- `(*FS).WalkDirContext(ctx context.Context, startInode uint32, fn func(p string, entry DirEntry) error) error`
+- `(*FS).WalkDirWithInode(startInode uint32, fn func(p string, entry DirEntry, inode Inode) error) error`
+- `(*FS).WalkDirWithInodeContext(ctx context.Context, startInode uint32, fn func(p string, entry DirEntry, inode Inode) error) error`
+
+Entries from a walk carry `Generation` and `ParentInode` alongside the rest of
+their inode metadata, because the walk reads each child's inode anyway to decide
+whether to descend.
+
+Naming an inode:
+
+- `(*FS).PathFor(inodeNum uint32) (string, error)`
+- `(*FS).PathForContext(ctx context.Context, inodeNum uint32) (string, error)`
+- `(*FS).BuildPathIndex() (*PathIndex, error)`
+- `(*FS).BuildPathIndexContext(ctx context.Context) (*PathIndex, error)`
+- `(*PathIndex).PathFor(inodeNum uint32) (string, error)`
+- `(*PathIndex).PathsFor(inodeNum uint32) []string`
+- `(*PathIndex).ParentOf(inodeNum uint32) (uint32, bool)`
+- `(*PathIndex).Len() int`
+- `(*PathIndex).Truncated() bool`
 
 File access:
 
@@ -179,9 +201,102 @@ Feature, xattr, journal, and integrity helpers:
 - `(*FS).DescribeJournalStatus() (string, error)`
 - `(*FS).GetJournalInode() uint32`
 - `(*FS).ListJournalTransactions() ([]JournalTransaction, error)`
+- `(*FS).ListJournalTransactionsContext(ctx context.Context) ([]JournalTransaction, error)`
+- `(*FS).JournalBlockCopies(fsBlock uint64) ([][]byte, error)`
+- `(*FS).JournalInodeVersions(inodeNum uint32) ([]Inode, error)`
+- `(*FS).BuildJournalIndex() (*JournalIndex, error)`
+- `(*FS).BuildJournalIndexContext(ctx context.Context) (*JournalIndex, error)`
+- `(*JournalIndex).BlockCopies(fsBlock uint64) ([][]byte, error)`
+- `(*JournalIndex).InodeVersions(inodeNum uint32) ([]Inode, error)`
+- `(*JournalIndex).HasBlock(fsBlock uint64) bool`
+- `(*JournalIndex).CopyCount(fsBlock uint64) int`
+- `(*JournalIndex).Transactions() []JournalTransaction`
+- `(*JournalIndex).Len() int`
 - `(*FS).ValidateSuperblockIntegrity() []CorruptionReport`
 - `(*FS).ValidateInodeIntegrity(inode *Inode) []CorruptionReport`
 - `(*FS).ValidateGroupDescriptorIntegrity(groupNum uint32, gd *GroupDescriptor) []CorruptionReport`
+
+### Naming journal-discovered inodes
+
+The journal reports what changed as block and inode numbers, never as paths.
+`BuildPathIndex` walks the tree once so that any number of those numbers can be
+named from a map:
+
+```go
+ctx := context.Background()
+
+ix, err := vol.BuildPathIndexContext(ctx)
+if err != nil {
+	// handle error
+}
+
+txs, err := vol.ListJournalTransactionsContext(ctx)
+if err != nil {
+	// handle error
+}
+
+for _, tx := range txs {
+	for _, tag := range tx.Tags {
+		// tag.FSBlock names a filesystem block whose contents were journalled.
+		_ = tag.FSBlock
+	}
+}
+
+// Given an inode number from any source — the journal, the inode table, a
+// deleted-entry scan — the index names it without walking again.
+path, err := ix.PathFor(inodeNum)
+if err != nil {
+	// errors.Is(err, libext.ErrPathNotFound) means nothing in the live tree
+	// links that inode, which is the ordinary answer for a deleted one.
+}
+_ = path
+```
+
+`(*FS).PathFor` is the single-shot form. It is cheap for a directory, which it
+names by following `..` upward, but for anything else it walks the tree on every
+call — so naming inodes in bulk should go through the index.
+
+### Recovering what the journal remembers
+
+`JournalBlockCopies` and `JournalInodeVersions` each walk the whole journal, so
+they answer one question well and a thousand questions badly. `JournalIndex`
+walks once and keeps the tag table; the block contents stay on disk and are read
+per query.
+
+```go
+jx, err := vol.BuildJournalIndexContext(ctx)
+if err != nil {
+	// A filesystem with no journal reports that here rather than returning an
+	// empty index.
+}
+
+// The cheap question first: most blocks were never journalled, and HasBlock
+// answers from the map without reading anything.
+for _, block := range changedBlocks {
+	if !jx.HasBlock(block) {
+		continue
+	}
+	copies, err := jx.BlockCopies(block) // newest first
+	if err != nil {
+		// handle error
+	}
+	_ = copies
+}
+
+// An unlink zeroes the extent tree in the live inode, but a journalled copy of
+// the same inode-table block from before the unlink still carries it.
+versions, err := jx.InodeVersions(inodeNum)
+if err != nil {
+	// handle error
+}
+for _, prior := range versions {
+	_ = prior.Size // the inode as it stood when that transaction was written
+}
+```
+
+Pair it with `BuildPathIndex` to turn the inode numbers the journal reports into
+names: one walk of the tree and one walk of the journal answer every question
+about both.
 
 ## Error Handling
 

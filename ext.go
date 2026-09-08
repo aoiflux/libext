@@ -4,13 +4,29 @@
 // constructor here returns:
 //
 //	Opening        Open, OpenWithOptions, OpenWithSize, OpenFile, OpenFileWithOptions
-//	Navigating     GetRootDirectory, Open, OpenPath, ListDir, ListDirEx, WalkDir
+//	Navigating     GetRootDirectory, Open, OpenPath, ListDir, ListDirEx, WalkDir,
+//	               WalkDirWithInode
+//	Naming         PathFor, BuildPathIndex, PathIndex.PathFor  (see path.go)
+//	Journal        ListJournalTransactions, JournalBlockCopies,
+//	               JournalInodeVersions, BuildJournalIndex  (see journal.go,
+//	               journalindex.go)
 //	Reading        File.Read, File.ReadAt, File.ReadAll, ReadFile, File.ReadLink
 //	Locating       Extents, DataRuns, MetadataBlocks  (see extent.go)
 //	Metadata       ReadInode, Inode.Timestamps, GetXAttrs  (see inode.go, xattr.go)
 //	Deleted data   DeletedEntries, ScanDeleted, OrphanInodes, ScanDirSlack
 //	Allocation     InodeAllocated, BlockAllocated, InodeBitmap, BlockBitmap
 //	Diagnostics    Warnings, CheckRequiredFeatures, Superblock, GroupDescriptors
+//
+// Whole-image operations also have ...Context forms that accept cancellation:
+// WalkDirContext, BuildPathIndexContext, BuildJournalIndexContext,
+// ScanDeletedContext, OrphanInodesContext, ScanDirSlackContext,
+// ListJournalTransactionsContext, ReportWithOptionsContext and their
+// neighbours. See the Cancellation section in doc.go.
+//
+// Two operations answer the same question about many subjects - naming inodes,
+// and recovering journalled block contents - and each has an index that pays
+// for its one expensive traversal once: PathIndex and JournalIndex. Reach for
+// those rather than calling PathFor or JournalInodeVersions in a loop.
 //
 // The library is strictly read-only: nothing here writes to the image.
 package libext

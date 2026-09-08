@@ -9,6 +9,11 @@ package libext
 // files this slack holds the only surviving evidence that the name ever
 // existed.
 
+import (
+	"context"
+	"errors"
+)
+
 // DirSlackEntry is a directory record recovered from the unused tail of a live
 // record, or from a record whose inode field was cleared.
 type DirSlackEntry struct {
@@ -35,6 +40,19 @@ type DirSlackEntry struct {
 // may since have been reused by an unrelated file. Cross-check Inode against the
 // inode table before treating a hit as a recovered file.
 func (fs *FS) ScanDirSlack(dirInode uint32) ([]DirSlackEntry, error) {
+	return fs.ScanDirSlackContext(context.Background(), dirInode)
+}
+
+// ScanDirSlackContext is ScanDirSlack with cancellation.
+//
+// Be aware of where the cancellation actually bites: the directory's data is
+// read whole before the scan begins, and that read is not interruptible.
+// Cancellation is observed between blocks of the already-loaded data, which
+// bounds the parsing but not the initial read.
+func (fs *FS) ScanDirSlackContext(ctx context.Context, dirInode uint32) ([]DirSlackEntry, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
 	inode, err := fs.ReadInode(dirInode)
 	if err != nil {
 		return nil, err
@@ -61,6 +79,9 @@ func (fs *FS) ScanDirSlack(dirInode uint32) ([]DirSlackEntry, error) {
 	// Records never straddle a block boundary, so each block is scanned on its
 	// own; that also stops damage in one block from derailing the rest.
 	for start := 0; start < len(data); start += blockSize {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		end := start + blockSize
 		if end > len(data) {
 			end = len(data)

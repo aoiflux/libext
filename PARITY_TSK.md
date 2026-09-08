@@ -25,6 +25,10 @@ Go.
 - [x] File type interpretation from dirent when available
 - [x] Root open, inode open, path open
 - [x] Recursive traversal
+- [x] Reverse naming: inode number to path (`PathFor`, `BuildPathIndex`), which
+      TSK exposes via `ifind`/`ffind`. Directories are named by following `..`
+      upward; anything else needs a downward walk, because a file's inode holds
+      no reference to the directories naming it.
 
 ## Remaining for Full TSK-Grade Parity
 

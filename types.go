@@ -188,12 +188,18 @@ type Inode struct {
 
 // Timestamps groups an inode's times. Dtime is zero unless the inode was
 // deleted, and Crtime is zero unless the inode was large enough to record it.
+//
+// The JSON encoding omits a zero time rather than emitting one. A timestamp the
+// inode never recorded must not appear in a report as 0001-01-01: absent says
+// "not recorded", which is the truth, while a rendered zero looks like an
+// answer. This needs omitzero rather than omitempty, which does nothing for a
+// struct field.
 type Timestamps struct {
-	Atime  time.Time
-	Mtime  time.Time
-	Ctime  time.Time
-	Crtime time.Time
-	Dtime  time.Time
+	Atime  time.Time `json:"atime,omitzero"`
+	Mtime  time.Time `json:"mtime,omitzero"`
+	Ctime  time.Time `json:"ctime,omitzero"`
+	Crtime time.Time `json:"crtime,omitzero"`
+	Dtime  time.Time `json:"dtime,omitzero"`
 }
 
 // Timestamps returns the inode's full MACB set.
@@ -223,11 +229,40 @@ type DirEntry struct {
 	IsDirectory bool
 	Size        uint64
 
-	// The fields below are populated only by ListDirEx, ReadDirEx, and ReadDir,
-	// which read each entry's inode. They are zero from ListDir, which does not.
-	Times   Timestamps
-	Mode    uint16
-	UID     uint32
-	GID     uint32
+	// ParentInode is the directory this record was read from - the directory that
+	// holds the name, not the parent of the inode the name points at. For an
+	// ordinary entry the distinction does not arise. For the ".." record it does:
+	// that record's Inode is the containing directory's parent, while its
+	// ParentInode is the containing directory itself. For "." the two are equal.
+	//
+	// Read it as "where this name lives". Joining the containing directory's path
+	// with Name therefore always produces this entry's path, "." and ".."
+	// included.
+	//
+	// Every listing call fills it, including plain ListDir, because the containing
+	// inode number is something the caller already passed in rather than anything
+	// that has to be read. It is 0 only where no containing directory is known: an
+	// entry a caller built itself.
+	ParentInode uint32
+
+	// The fields below are populated only by the calls that read each entry's
+	// inode: ListDirEx and ReadDirEx with WithInodeMetadata, ReadDir, and WalkDir,
+	// which reads the inode anyway to decide whether to descend. They are zero
+	// from ListDir, which reads no inodes at all.
+	Times Timestamps
+	Mode  uint16
+	UID   uint32
+	GID   uint32
+
+	// Generation is the inode's reuse counter. It is what distinguishes two files
+	// that occupied the same inode slot at different times, and so is half of the
+	// identity needed to match an entry against a report or a journalled copy
+	// taken at another moment; the inode number alone is not enough, because ext
+	// reuses slots.
+	//
+	// Zero is a legitimate value - mke2fs leaves many inodes at 0 - so it cannot
+	// be read as "not populated". Use the call you made to know that.
+	Generation uint32
+
 	Deleted bool
 }

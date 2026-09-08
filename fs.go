@@ -50,6 +50,19 @@ type FS struct {
 	bitmapMu    sync.RWMutex
 	blockBitmap map[uint32][]byte
 	inodeBitmap map[uint32][]byte
+
+	// journalMu guards the resolved journal block list, on the same reasoning as
+	// the bitmap cache: the journal inode's block map cannot change under a
+	// read-only FS, so the list is read once and shared. JournalBlockCopies alone
+	// would otherwise resolve it three times per call, and the list is one uint64
+	// per journal block - 2 MiB for a 1 GiB journal.
+	//
+	// journalErr is cached alongside it so a filesystem with no journal answers
+	// from memory too, rather than re-deriving the same failure.
+	journalMu       sync.RWMutex
+	journalBlockSet []uint64
+	journalErr      error
+	journalResolved bool
 }
 
 // Close releases the underlying file handle, if this FS owns one.

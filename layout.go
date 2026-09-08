@@ -161,4 +161,11 @@ const (
 	// group is already a bounded unit, so this only bounds the tail latency of
 	// a cancel within one group.
 	cancellationCheckInterval = 1024
+
+	// maxWalkDepth bounds how deep a directory walk descends. The cycle guard
+	// already stops a directory being entered twice, but a crafted image can
+	// still chain hundreds of thousands of distinct directories, and every level
+	// lengthens every path string beneath it. The cap is far past anything a real
+	// filesystem produces.
+	maxWalkDepth = 4096
 )

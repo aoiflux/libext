@@ -1,6 +1,10 @@
 package libext
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 // Orphan inode enumeration.
 //
@@ -25,12 +29,20 @@ const (
 // dedicated file, so reading only the chain — as most tooling does — silently
 // reports nothing on a modern filesystem.
 func (fs *FS) OrphanInodes() ([]uint32, error) {
-	inodes, _, err := fs.orphanInodesWithSource()
+	return fs.OrphanInodesContext(context.Background())
+}
+
+// OrphanInodesContext is OrphanInodes with cancellation.
+func (fs *FS) OrphanInodesContext(ctx context.Context) ([]uint32, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	inodes, _, err := fs.orphanInodesWithSource(ctx)
 	return inodes, err
 }
 
 // orphanInodesWithSource returns orphan inodes alongside where each was found.
-func (fs *FS) orphanInodesWithSource() ([]uint32, []DeletedSource, error) {
+func (fs *FS) orphanInodesWithSource(ctx context.Context) ([]uint32, []DeletedSource, error) {
 	var (
 		inodes  []uint32
 		sources []DeletedSource
@@ -46,7 +58,11 @@ func (fs *FS) orphanInodesWithSource() ([]uint32, []DeletedSource, error) {
 		sources = append(sources, src)
 	}
 
-	for _, num := range fs.legacyOrphanChain() {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	for _, num := range fs.legacyOrphanChain(ctx) {
 		add(num, DeletedSourceOrphanList)
 	}
 
@@ -66,13 +82,20 @@ func (fs *FS) orphanInodesWithSource() ([]uint32, []DeletedSource, error) {
 //
 // The link is stored in each orphan's i_dtime field, which is why a member of
 // this list has no usable deletion time.
-func (fs *FS) legacyOrphanChain() []uint32 {
+func (fs *FS) legacyOrphanChain(ctx context.Context) []uint32 {
 	var (
 		out  []uint32
 		seen = make(map[uint32]bool)
 	)
 
 	for num := fs.sb.LastOrphan; num != 0 && len(out) < orphanChainLimit; {
+		// The chain is capped at orphanChainLimit, but walking it costs one inode
+		// read per link, so a full chain is 65536 reads. A cancelled context
+		// truncates the chain rather than erroring here: the caller's own ctx.Err
+		// check reports the cancellation, and a partial chain is still evidence.
+		if ctx.Err() != nil {
+			break
+		}
 		if num > fs.sb.InodesCount || seen[num] {
 			fs.warn(WarnDegradedRead, "orphan_list",
 				fmt.Sprintf("orphan chain broken at inode %d", num))

@@ -36,9 +36,9 @@ type oracle struct {
 	inodeCount uint64
 	inodeSize  uint64
 
-	inodes map[uint32]oracleInode
+	inodes  map[uint32]oracleInode
 	extents map[uint32][]oracleExtent
-	blocks map[uint32]int
+	blocks  map[uint32]int
 	deleted map[uint32]bool
 	slack   map[string]bool // "<parent> <inode> <name>"
 	journal []string        // "<sequence> <type> <block>"

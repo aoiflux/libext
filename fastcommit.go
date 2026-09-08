@@ -57,18 +57,18 @@ func (t FastCommitTag) String() string {
 
 // FastCommitOp is one operation recorded in the fast-commit area.
 type FastCommitOp struct {
-	Tag FastCommitTag
+	Tag FastCommitTag `json:"tag"`
 
 	// Inode is the subject of the operation, and Parent the directory it was
 	// linked into. Both are 0 for records that do not carry them.
-	Inode  uint32
-	Parent uint32
+	Inode  uint32 `json:"inode"`
+	Parent uint32 `json:"parent"`
 
 	// Name is the filename for creat, link and unlink records.
-	Name string
+	Name string `json:"name"`
 
 	// Block is the journal block the record was found in.
-	Block uint64
+	Block uint64 `json:"block"`
 }
 
 // fastCommitTLSize is the size of the tag/length header preceding each record.

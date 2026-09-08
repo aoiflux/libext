@@ -1,10 +1,11 @@
 package libext
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"path"
 )
 
 // EXTReport captures a filesystem-level view similar to common forensic report formats.
@@ -34,12 +35,35 @@ type EXTMeta struct {
 
 // EXTFile describes one reachable inode-backed path in the filesystem tree.
 type EXTFile struct {
-	Filename     string         `json:"filename"`
-	Type         string         `json:"type"`
-	IsFragmented bool           `json:"is_fragmented"`
-	IsDeleted    bool           `json:"is_deleted"`
-	Size         int64          `json:"size"`
-	Fragments    []FileFragment `json:"fragments"`
+	Filename string `json:"filename"`
+
+	// InodeNumber and Generation are the entry's identity. Diffing two reports by
+	// filename alone conflates a file that was replaced at the same path with one
+	// that was never touched; the inode number separates those, and the
+	// generation separates two files that occupied the same inode slot at
+	// different times.
+	//
+	// Neither is omitted when zero. Generation 0 is legitimate, so omitting it
+	// would make "generation zero" indistinguishable from "not reported", and a
+	// report row is a thing that gets diffed, which wants a stable key set.
+	InodeNumber uint32 `json:"inode_number"`
+	Generation  uint32 `json:"generation"`
+
+	// ParentInode is the directory holding this name, and 0 when it is not known
+	// - which is what a deep scan reports for an inode the tree no longer
+	// reaches.
+	ParentInode uint32 `json:"parent_inode"`
+
+	Type         string `json:"type"`
+	IsFragmented bool   `json:"is_fragmented"`
+	IsDeleted    bool   `json:"is_deleted"`
+	Size         int64  `json:"size"`
+
+	// Times is the inode's full MACB set. Times the inode did not record are
+	// absent from the JSON rather than encoded as a zero date.
+	Times Timestamps `json:"times"`
+
+	Fragments []FileFragment `json:"fragments"`
 }
 
 // FileFragment represents a contiguous on-disk byte span for a file.
@@ -133,6 +157,17 @@ func (fs *FS) ReportDeep(name string) (EXTReport, error) {
 
 // ReportWithOptions builds an EXT report with configurable scan depth.
 func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, error) {
+	return fs.ReportWithOptionsContext(context.Background(), name, opts)
+}
+
+// ReportWithOptionsContext is ReportWithOptions with cancellation.
+//
+// Both scan depths are whole-image operations - the deep scan reads every inode
+// in the table - so both are slow enough on a large image to want interrupting.
+func (fs *FS) ReportWithOptionsContext(ctx context.Context, name string, opts ReportOptions) (EXTReport, error) {
+	if ctx == nil {
+		return EXTReport{}, errors.New("context is nil")
+	}
 	sb := fs.Superblock()
 	imageEnd := fs.computeImageEndOffset()
 	report := EXTReport{
@@ -148,8 +183,20 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 	}
 
 	if opts.DeepScan {
-		paths := fs.collectReachablePathsByInode()
+		// A deep report without paths is a list of numbers, so an index that could
+		// not be built is fatal here rather than degraded.
+		ix, err := fs.buildPathIndex(ctx, 0)
+		if err != nil {
+			return EXTReport{}, err
+		}
 		for inodeNum := uint32(1); inodeNum <= fs.sb.InodesCount; inodeNum++ {
+			// Paced as elsewhere, and tested before the counter advances so an
+			// already-cancelled context is caught on the first inode.
+			if (inodeNum-1)%cancellationCheckInterval == 0 {
+				if err := ctx.Err(); err != nil {
+					return EXTReport{}, err
+				}
+			}
 			inode, err := fs.ReadInode(inodeNum)
 			if err != nil {
 				continue
@@ -168,25 +215,39 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 				fragments = nil
 			}
 
-			name := paths[inodeNum]
+			name := ix.paths[inodeNum]
 			if name == "" {
 				name = fmt.Sprintf("inode:%d", inodeNum)
 			}
 			report.Files = append(report.Files, EXTFile{
 				Filename:     name,
+				InodeNumber:  inodeNum,
+				Generation:   inode.Generation,
+				ParentInode:  ix.parents[inodeNum],
 				Type:         inodeTypeName(inode.Mode),
 				IsFragmented: len(fragments) > 1,
 				IsDeleted:    inodeDeleted(inode),
 				Size:         int64(inode.Size),
+				Times:        inode.Timestamps(),
 				Fragments:    fragments,
 			})
 		}
 		return report, nil
 	}
 
-	err := fs.WalkDir(RootInode, func(p string, entry DirEntry) error {
-		inode, err := fs.ReadInode(entry.Inode)
-		if err != nil {
+	// WalkDirWithInodeContext rather than WalkDirContext: the walk has already
+	// read each child's inode to decide whether to descend, and inodeFragments
+	// needs the whole inode rather than the summary DirEntry carries. Taking the
+	// walk's copy halves this report's inode reads.
+	err := fs.WalkDirWithInodeContext(ctx, RootInode, func(p string, entry DirEntry, inode Inode) error {
+		if inode.Number == 0 {
+			// The walk keeps going past an unreadable inode; a report does not,
+			// because a row with no inode behind it would be a row of zeroes. Read
+			// the one inode again purely to report why it failed.
+			_, err := fs.ReadInode(entry.Inode)
+			if err == nil {
+				err = ErrInvalidInode
+			}
 			return fmt.Errorf("read inode for %s: %w", p, err)
 		}
 
@@ -199,10 +260,14 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 
 		report.Files = append(report.Files, EXTFile{
 			Filename:     p,
+			InodeNumber:  entry.Inode,
+			Generation:   inode.Generation,
+			ParentInode:  entry.ParentInode,
 			Type:         inodeTypeName(inode.Mode),
 			IsFragmented: len(fragments) > 1,
 			IsDeleted:    inodeDeleted(inode),
 			Size:         int64(inode.Size),
+			Times:        inode.Timestamps(),
 			Fragments:    fragments,
 		})
 		return nil
@@ -212,49 +277,6 @@ func (fs *FS) ReportWithOptions(name string, opts ReportOptions) (EXTReport, err
 	}
 
 	return report, nil
-}
-
-func (fs *FS) collectReachablePathsByInode() map[uint32]string {
-	paths := map[uint32]string{
-		RootInode: "/",
-	}
-	type dirItem struct {
-		inode uint32
-		p     string
-	}
-	queue := []dirItem{{inode: RootInode, p: "/"}}
-	seenDirs := map[uint32]bool{RootInode: true}
-
-	for len(queue) > 0 {
-		item := queue[0]
-		queue = queue[1:]
-
-		entries, err := fs.ListDir(item.inode)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.Name == "." || e.Name == ".." {
-				continue
-			}
-			childPath := path.Join(item.p, e.Name)
-			if _, ok := paths[e.Inode]; !ok {
-				paths[e.Inode] = childPath
-			}
-
-			child, err := fs.ReadInode(e.Inode)
-			if err != nil || !child.IsDirectory {
-				continue
-			}
-			if seenDirs[e.Inode] {
-				continue
-			}
-			seenDirs[e.Inode] = true
-			queue = append(queue, dirItem{inode: e.Inode, p: childPath})
-		}
-	}
-
-	return paths
 }
 
 func inodeInterestingForReport(inode Inode) bool {
@@ -364,12 +386,19 @@ func (fs *FS) WriteReportDeep(name string, w io.Writer) error {
 
 // WriteReportWithOptions writes a JSON report using the provided options.
 func (fs *FS) WriteReportWithOptions(name string, opts ReportOptions, w io.Writer) error {
-	rep, err := fs.ReportWithOptions(name, opts)
-	if err != nil {
-		return err
-	}
+	return fs.WriteReportWithOptionsContext(context.Background(), name, opts, w)
+}
+
+// WriteReportWithOptionsContext is WriteReportWithOptions with cancellation.
+func (fs *FS) WriteReportWithOptionsContext(ctx context.Context, name string, opts ReportOptions, w io.Writer) error {
+	// The writer is checked before the scan rather than after it: a nil writer
+	// makes the whole scan wasted work, and the caller learns immediately.
 	if w == nil {
 		return fmt.Errorf("writer is nil")
+	}
+	rep, err := fs.ReportWithOptionsContext(ctx, name, opts)
+	if err != nil {
+		return err
 	}
 	enc := json.NewEncoder(w)
 	return enc.Encode(rep)

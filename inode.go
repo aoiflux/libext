@@ -16,16 +16,11 @@ func (fs *FS) ReadInode(inodeNum uint32) (Inode, error) {
 // fixed fields holds extended attributes and inline data, so callers that need
 // those work from the raw form rather than the parsed one.
 func (fs *FS) readInodeRaw(inodeNum uint32) ([]byte, error) {
-	if inodeNum == 0 || inodeNum > fs.sb.InodesCount {
-		return nil, ErrInvalidInode
+	block, offInBlock, err := fs.inodeTableLocation(inodeNum)
+	if err != nil {
+		return nil, err
 	}
-	group := (inodeNum - 1) / fs.sb.InodesPerGroup
-	index := (inodeNum - 1) % fs.sb.InodesPerGroup
-	if group >= uint32(len(fs.groups)) {
-		return nil, ErrInvalidInode
-	}
-	gd := fs.groups[group]
-	off := fs.blockOffset(gd.InodeTableBlock) + uint64(index)*uint64(fs.sb.InodeSize)
+	off := fs.blockOffset(block) + offInBlock
 
 	raw := make([]byte, fs.sb.InodeSize)
 	if err := fs.readAt(off, raw); err != nil {

@@ -133,13 +133,24 @@ func (fs *FS) DeletedEntries() ([]DeletedEntry, error) {
 	return fs.DeletedEntriesWithOptions(DeletedScanOptions{})
 }
 
+// DeletedEntriesContext is DeletedEntries with cancellation.
+func (fs *FS) DeletedEntriesContext(ctx context.Context) ([]DeletedEntry, error) {
+	return fs.DeletedEntriesWithOptionsContext(ctx, DeletedScanOptions{})
+}
+
 // DeletedEntriesWithOptions enumerates deleted inodes from the selected sources.
 //
 // Prefer ScanDeleted on large images: this collects every result in memory, and
 // a multi-terabyte volume has hundreds of millions of inode table entries.
 func (fs *FS) DeletedEntriesWithOptions(opts DeletedScanOptions) ([]DeletedEntry, error) {
+	return fs.DeletedEntriesWithOptionsContext(context.Background(), opts)
+}
+
+// DeletedEntriesWithOptionsContext is DeletedEntriesWithOptions with
+// cancellation.
+func (fs *FS) DeletedEntriesWithOptionsContext(ctx context.Context, opts DeletedScanOptions) ([]DeletedEntry, error) {
 	var out []DeletedEntry
-	err := fs.ScanDeleted(opts, func(e DeletedEntry) error {
+	err := fs.ScanDeletedContext(ctx, opts, func(e DeletedEntry) error {
 		out = append(out, e)
 		return nil
 	})
@@ -204,9 +215,12 @@ type deletedScan struct {
 
 	// slack maps an inode to the name recovered for it from directory slack;
 	// claimed records which of those names were attached to an emitted entry.
-	slack    map[uint32]slackName
-	claimed  map[uint32]bool
-	dirPaths map[uint32]string
+	slack   map[uint32]slackName
+	claimed map[uint32]bool
+
+	// pathIx names the reachable tree. It is built once by indexSlack and read
+	// by scanInodeTable, which needs the same answers.
+	pathIx *PathIndex
 
 	count int
 }
@@ -228,7 +242,9 @@ func (sc *deletedScan) run(fn func(DeletedEntry) error) error {
 	// name but nothing else; indexing first lets a single entry carry both
 	// instead of reporting the same deletion twice from two angles.
 	if !sc.opts.SkipDirSlack {
-		sc.indexSlack()
+		if err := sc.indexSlack(); err != nil {
+			return err
+		}
 	}
 
 	// Orphans next: they are few, and knowing them lets the inode table pass
@@ -261,17 +277,30 @@ type slackName struct {
 }
 
 // indexSlack walks reachable directories and records the names it recovers.
-func (sc *deletedScan) indexSlack() {
+func (sc *deletedScan) indexSlack() error {
 	fs := sc.fs
 	sc.slack = make(map[uint32]slackName)
-	sc.dirPaths = fs.collectReachablePathsByInode()
 
-	for dirInode, dirPath := range sc.dirPaths {
-		inode, err := fs.ReadInode(dirInode)
-		if err != nil || !inode.IsDirectory {
-			continue
+	ix, err := fs.buildPathIndex(sc.ctx, 0)
+	if err != nil {
+		return err
+	}
+	sc.pathIx = ix
+
+	// Iterate deterministically. The first name found for an inode is the one
+	// kept, so iterating the map directly would let Go's randomised map order
+	// decide which of two directories won - making the same image produce
+	// different output run to run. emitUnclaimedSlack sorts for the same reason.
+	for _, dirInode := range ix.sortedDirs() {
+		// Cancellation is checked per directory rather than per batch: unlike an
+		// inode decode, one directory scan reads and parses a whole directory, so
+		// the check costs nothing measurable beside it.
+		if err := sc.ctx.Err(); err != nil {
+			return err
 		}
-		entries, err := fs.ScanDirSlack(dirInode)
+
+		dirPath := ix.dirs[dirInode]
+		entries, err := fs.ScanDirSlackContext(sc.ctx, dirInode)
 		if err != nil {
 			continue
 		}
@@ -291,6 +320,7 @@ func (sc *deletedScan) indexSlack() {
 			}
 		}
 	}
+	return nil
 }
 
 // nameFor attaches a recovered name to an entry, if slack supplied one.
@@ -315,7 +345,14 @@ func (sc *deletedScan) emitUnclaimedSlack(fn func(DeletedEntry) error) error {
 	}
 	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
 
-	for _, num := range nums {
+	for i, num := range nums {
+		// The body consults the inode bitmap per entry, so this is paced rather
+		// than checked every iteration.
+		if i%cancellationCheckInterval == 0 {
+			if err := sc.ctx.Err(); err != nil {
+				return err
+			}
+		}
 		s := sc.slack[num]
 		entry := DeletedEntry{
 			Inode:       num,
@@ -346,10 +383,16 @@ func (sc *deletedScan) emitUnclaimedSlack(fn func(DeletedEntry) error) error {
 // a parallel run is identical to a sequential one.
 func (sc *deletedScan) scanInodeTable(fn func(DeletedEntry) error) error {
 	fs := sc.fs
-	paths := sc.dirPaths
-	if paths == nil {
-		paths = fs.collectReachablePathsByInode()
+	ix := sc.pathIx
+	if ix == nil {
+		// SkipDirSlack means indexSlack never ran, but the inode table pass still
+		// wants names for the inodes it reports.
+		var err error
+		if ix, err = fs.buildPathIndex(sc.ctx, 0); err != nil {
+			return err
+		}
 	}
+	paths := ix.paths
 
 	groups := len(fs.groups)
 	if groups == 0 {
@@ -435,11 +478,17 @@ func (sc *deletedScan) scanGroup(ctx context.Context, g uint32, paths map[uint32
 
 // scanOrphans reports inodes on the legacy chain and in the orphan file.
 func (sc *deletedScan) scanOrphans(fn func(DeletedEntry) error) error {
-	orphans, sources, err := sc.fs.orphanInodesWithSource()
+	orphans, sources, err := sc.fs.orphanInodesWithSource(sc.ctx)
 	if err != nil {
 		return err
 	}
 	for i, num := range orphans {
+		// Checked per orphan rather than per batch: describe runs InodeExtents and
+		// a recoverability judgement over every block of the inode, so the check
+		// is free beside it. The chain is capped at 65536, which is not instant.
+		if err := sc.ctx.Err(); err != nil {
+			return err
+		}
 		sc.seen[num] = true
 
 		inode, err := sc.fs.ReadInode(num)

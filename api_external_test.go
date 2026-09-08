@@ -13,6 +13,7 @@ package libext_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -69,18 +70,18 @@ func TestPublicSurfaceCompiles(t *testing.T) {
 
 	// --- filesystem-level ----------------------------------------------------
 	var (
-		_ func() error                     = fs.Close
-		_ func() bool                      = fs.IsClosed
-		_ func() libext.FSKind             = fs.Kind
-		_ func() libext.Superblock         = fs.Superblock
-		_ func() libext.Options            = fs.Options
-		_ func() []libext.Warning          = fs.Warnings
-		_ func() []libext.GroupDescriptor  = fs.GroupDescriptors
-		_ func() error                     = fs.CheckRequiredFeatures
-		_ func() []string                  = fs.CheckOptionalFeatures
-		_ func() string                    = fs.DescribeFeatures
-		_ func(string) uint32              = fs.UnknownFeatureBits
-		_ func() []libext.Feature          = fs.BlockingFeatures
+		_ func() error                    = fs.Close
+		_ func() bool                     = fs.IsClosed
+		_ func() libext.FSKind            = fs.Kind
+		_ func() libext.Superblock        = fs.Superblock
+		_ func() libext.Options           = fs.Options
+		_ func() []libext.Warning         = fs.Warnings
+		_ func() []libext.GroupDescriptor = fs.GroupDescriptors
+		_ func() error                    = fs.CheckRequiredFeatures
+		_ func() []string                 = fs.CheckOptionalFeatures
+		_ func() string                   = fs.DescribeFeatures
+		_ func(string) uint32             = fs.UnknownFeatureBits
+		_ func() []libext.Feature         = fs.BlockingFeatures
 	)
 
 	// --- navigation ----------------------------------------------------------
@@ -93,6 +94,24 @@ func TestPublicSurfaceCompiles(t *testing.T) {
 		_ func(uint32) ([]libext.DirEntry, error)                    = fs.EnhancedListDir
 		_ func(string) (libext.DirEntry, error)                      = fs.LookupPath
 		_ func(uint32, func(string, libext.DirEntry) error) error    = fs.WalkDir
+
+		// The callback type is identical to WalkDir's, which is what lets a
+		// caller pass the same function to either.
+		_ func(context.Context, uint32, func(string, libext.DirEntry) error) error = fs.WalkDirContext
+
+		// The third callback shape: the walk hands over the inode it read to
+		// decide whether to descend, so a caller needing the whole inode does not
+		// read it a second time.
+		_ func(uint32, func(string, libext.DirEntry, libext.Inode) error) error                  = fs.WalkDirWithInode
+		_ func(context.Context, uint32, func(string, libext.DirEntry, libext.Inode) error) error = fs.WalkDirWithInodeContext
+	)
+
+	// --- naming --------------------------------------------------------------
+	var (
+		_ func() (*libext.PathIndex, error)                = fs.BuildPathIndex
+		_ func(context.Context) (*libext.PathIndex, error) = fs.BuildPathIndexContext
+		_ func(uint32) (string, error)                     = fs.PathFor
+		_ func(context.Context, uint32) (string, error)    = fs.PathForContext
 	)
 
 	// --- inodes and content --------------------------------------------------
@@ -103,11 +122,11 @@ func TestPublicSurfaceCompiles(t *testing.T) {
 
 	// --- block maps ----------------------------------------------------------
 	var (
-		_ func(uint32) ([]libext.Extent, error)                                = fs.Extents
-		_ func(uint32, libext.ExtentOptions) ([]libext.Extent, error)          = fs.ExtentsWithOptions
-		_ func(libext.Inode, libext.ExtentOptions) ([]libext.Extent, error)    = fs.InodeExtents
-		_ func(uint32) ([]libext.ByteRange, error)                             = fs.DataRuns
-		_ func(uint32) ([]uint64, error)                                       = fs.MetadataBlocks
+		_ func(uint32) ([]libext.Extent, error)                             = fs.Extents
+		_ func(uint32, libext.ExtentOptions) ([]libext.Extent, error)       = fs.ExtentsWithOptions
+		_ func(libext.Inode, libext.ExtentOptions) ([]libext.Extent, error) = fs.InodeExtents
+		_ func(uint32) ([]libext.ByteRange, error)                          = fs.DataRuns
+		_ func(uint32) ([]uint64, error)                                    = fs.MetadataBlocks
 	)
 
 	// --- allocation ----------------------------------------------------------
@@ -120,55 +139,81 @@ func TestPublicSurfaceCompiles(t *testing.T) {
 
 	// --- deleted data --------------------------------------------------------
 	var (
-		_ func() ([]libext.DeletedEntry, error)                                    = fs.DeletedEntries
-		_ func(libext.DeletedScanOptions) ([]libext.DeletedEntry, error)           = fs.DeletedEntriesWithOptions
-		_ func(libext.DeletedScanOptions, func(libext.DeletedEntry) error) error   = fs.ScanDeleted
-		_ func() ([]uint32, error)                                                 = fs.OrphanInodes
-		_ func() uint32                                                            = fs.OrphanFileInode
-		_ func(uint32) ([]libext.DirSlackEntry, error)                             = fs.ScanDirSlack
-		_ func(int) []uint32                                                       = fs.ScanForOrphanedInodes
+		_ func() ([]libext.DeletedEntry, error)                                  = fs.DeletedEntries
+		_ func(libext.DeletedScanOptions) ([]libext.DeletedEntry, error)         = fs.DeletedEntriesWithOptions
+		_ func(libext.DeletedScanOptions, func(libext.DeletedEntry) error) error = fs.ScanDeleted
+		_ func() ([]uint32, error)                                               = fs.OrphanInodes
+		_ func() uint32                                                          = fs.OrphanFileInode
+		_ func(uint32) ([]libext.DirSlackEntry, error)                           = fs.ScanDirSlack
+		_ func(int) []uint32                                                     = fs.ScanForOrphanedInodes
+
+		_ func(context.Context) ([]libext.DeletedEntry, error)                                    = fs.DeletedEntriesContext
+		_ func(context.Context, libext.DeletedScanOptions) ([]libext.DeletedEntry, error)         = fs.DeletedEntriesWithOptionsContext
+		_ func(context.Context, libext.DeletedScanOptions, func(libext.DeletedEntry) error) error = fs.ScanDeletedContext
+		_ func(context.Context) ([]uint32, error)                                                 = fs.OrphanInodesContext
+		_ func(context.Context, uint32) ([]libext.DirSlackEntry, error)                           = fs.ScanDirSlackContext
 	)
 
 	// --- inline data and attributes -----------------------------------------
 	var (
-		_ func(libext.Inode) bool                        = fs.HasInlineData
-		_ func(uint32) ([]byte, bool, error)             = fs.InlineData
-		_ func(uint32) (libext.XAttrList, error)         = fs.GetXAttrs
-		_ func(*libext.Inode) (libext.XAttrList, error)  = fs.GetInlineXAttrs
+		_ func(libext.Inode) bool                       = fs.HasInlineData
+		_ func(uint32) ([]byte, bool, error)            = fs.InlineData
+		_ func(uint32) (libext.XAttrList, error)        = fs.GetXAttrs
+		_ func(*libext.Inode) (libext.XAttrList, error) = fs.GetInlineXAttrs
 	)
 
 	// --- journal -------------------------------------------------------------
 	var (
-		_ func() (*libext.JournalSuperblock, error)     = fs.JournalSuperblock
-		_ func() ([]libext.JournalTransaction, error)   = fs.ListJournalTransactions
-		_ func() uint32                                 = fs.GetJournalInode
-		_ func() (uint32, bool, error)                  = fs.GetJournalLocation
-		_ func() (string, error)                        = fs.DescribeJournalStatus
-		_ func() map[string]bool                        = fs.GetJournalFeatures
-		_ func(uint64) ([][]byte, error)                = fs.JournalBlockCopies
-		_ func(uint32) ([]libext.Inode, error)          = fs.JournalInodeVersions
-		_ func() ([]libext.FastCommitOp, error)         = fs.FastCommitOps
+		_ func() (*libext.JournalSuperblock, error)       = fs.JournalSuperblock
+		_ func() ([]libext.JournalTransaction, error)     = fs.ListJournalTransactions
+		_ func() uint32                                   = fs.GetJournalInode
+		_ func() (uint32, bool, error)                    = fs.GetJournalLocation
+		_ func() (string, error)                          = fs.DescribeJournalStatus
+		_ func() map[string]bool                          = fs.GetJournalFeatures
+		_ func(uint64) ([][]byte, error)                  = fs.JournalBlockCopies
+		_ func(uint32) ([]libext.Inode, error)            = fs.JournalInodeVersions
+		_ func() ([]libext.FastCommitOp, error)           = fs.FastCommitOps
 		_ func([]byte) (*libext.JournalSuperblock, error) = libext.ParseJournalSuperblock
+
+		_ func(context.Context) ([]libext.JournalTransaction, error) = fs.ListJournalTransactionsContext
+		_ func(context.Context, uint64) ([][]byte, error)            = fs.JournalBlockCopiesContext
+		_ func(context.Context, uint32) ([]libext.Inode, error)      = fs.JournalInodeVersionsContext
+
+		_ func() (*libext.JournalIndex, error)                = fs.BuildJournalIndex
+		_ func(context.Context) (*libext.JournalIndex, error) = fs.BuildJournalIndexContext
 	)
+
+	var jx *libext.JournalIndex
+	if jx != nil {
+		_, _ = jx.BlockCopies(0)
+		_, _ = jx.InodeVersions(0)
+		_ = jx.HasBlock(0)
+		_ = jx.CopyCount(0)
+		_ = jx.Transactions()
+		_ = jx.Len()
+	}
 
 	// --- reporting -----------------------------------------------------------
 	var (
-		_ func(string) (libext.EXTReport, error)                        = fs.Report
-		_ func(string) (libext.EXTReport, error)                        = fs.ReportDeep
-		_ func(string, libext.ReportOptions) (libext.EXTReport, error)  = fs.ReportWithOptions
-		_ func(string, io.Writer) error                                 = fs.WriteReport
-		_ func(string, libext.ReportOptions, io.Writer) error           = fs.WriteReportWithOptions
+		_ func(string) (libext.EXTReport, error)                       = fs.Report
+		_ func(string) (libext.EXTReport, error)                       = fs.ReportDeep
+		_ func(string, libext.ReportOptions) (libext.EXTReport, error) = fs.ReportWithOptions
+		_ func(string, io.Writer) error                                = fs.WriteReport
+		_ func(string, libext.ReportOptions, io.Writer) error          = fs.WriteReportWithOptions
+
+		_ func(context.Context, string, libext.ReportOptions) (libext.EXTReport, error) = fs.ReportWithOptionsContext
+		_ func(context.Context, string, libext.ReportOptions, io.Writer) error          = fs.WriteReportWithOptionsContext
 	)
 
 	// --- integrity -----------------------------------------------------------
 	var (
-		_ func() []libext.CorruptionReport                                     = fs.ValidateSuperblockIntegrity
-		_ func(*libext.Inode) []libext.CorruptionReport                        = fs.ValidateInodeIntegrity
-		_ func(uint32, *libext.GroupDescriptor) []libext.CorruptionReport      = fs.ValidateGroupDescriptorIntegrity
-		_ func(uint32, []byte) error                                           = fs.VerifyBlockBitmapChecksum
-		_ func(uint32, []byte) error                                           = fs.VerifyInodeBitmapChecksum
-		_ func(uint32, int) (bool, error)                                      = fs.DetectCircularReferences
-		_ func([]libext.CorruptionReport) string                               = libext.ReportCorruptions
+		_ func() []libext.CorruptionReport                                = fs.ValidateSuperblockIntegrity
+		_ func(*libext.Inode) []libext.CorruptionReport                   = fs.ValidateInodeIntegrity
+		_ func(uint32, *libext.GroupDescriptor) []libext.CorruptionReport = fs.ValidateGroupDescriptorIntegrity
+		_ func(uint32, []byte) error                                      = fs.VerifyBlockBitmapChecksum
+		_ func(uint32, []byte) error                                      = fs.VerifyInodeBitmapChecksum
+		_ func(uint32, int) (bool, error)                                 = fs.DetectCircularReferences
+		_ func([]libext.CorruptionReport) string                          = libext.ReportCorruptions
 	)
 
 	_ = opts
@@ -204,6 +249,7 @@ func TestPublicTypeFields(t *testing.T) {
 	_, _, _, _ = de.Name, de.Inode, de.RecLen, de.NameLen
 	_, _, _ = de.FileType, de.IsDirectory, de.Size
 	_, _, _, _, _ = de.Times, de.Mode, de.UID, de.GID, de.Deleted
+	_, _ = de.Generation, de.ParentInode
 
 	var do libext.DirOptions
 	_, _ = do.WithInodeMetadata, do.IncludeDotEntries
@@ -252,6 +298,23 @@ func TestPublicTypeFields(t *testing.T) {
 	var fc libext.FastCommitOp
 	_, _, _, _, _ = fc.Tag, fc.Inode, fc.Parent, fc.Name, fc.Block
 	_ = fc.Tag.String()
+
+	// EXTFile was not pinned before this: only EXTReport, FileFragment and
+	// ReportOptions were. Its identity fields are what a consumer diffs two
+	// reports by, so the whole set is pinned here.
+	var ef libext.EXTFile
+	_, _, _ = ef.Filename, ef.InodeNumber, ef.Generation
+	_, _, _ = ef.ParentInode, ef.Type, ef.IsFragmented
+	_, _, _, _ = ef.IsDeleted, ef.Size, ef.Times, ef.Fragments
+
+	var pi *libext.PathIndex
+	if pi != nil {
+		_, _ = pi.PathFor(0)
+		_ = pi.PathsFor(0)
+		_, _ = pi.ParentOf(0)
+		_ = pi.Len()
+		_ = pi.Truncated()
+	}
 
 	var f libext.Feature
 	_, _, _, _, _, _ = f.Name, f.Description, f.FlagType, f.FlagValue, f.Status, f.Blocking
@@ -356,19 +419,19 @@ func TestPublicConstants(t *testing.T) {
 func TestFileSurface(t *testing.T) {
 	var f *libext.File
 	var (
-		_ func() string                                        = f.Name
-		_ func() uint32                                        = f.InodeNumber
-		_ func() bool                                          = f.IsDirectory
-		_ func() int64                                         = f.Size
-		_ func([]byte) (int, error)                            = f.Read
-		_ func([]byte, int64) (int, error)                     = f.ReadAt
-		_ func() ([]byte, error)                               = f.ReadAll
-		_ func() (string, error)                               = f.ReadLink
-		_ func() ([]libext.DirEntry, error)                    = f.ReadDir
-		_ func(libext.DirOptions) ([]libext.DirEntry, error)   = f.ReadDirEx
-		_ func() ([]libext.Extent, error)                      = f.Extents
-		_ func() ([]libext.ByteRange, error)                   = f.DataRuns
-		_ func() libext.Inode                                  = f.Inode
-		_ func() libext.Timestamps                             = f.Timestamps
+		_ func() string                                      = f.Name
+		_ func() uint32                                      = f.InodeNumber
+		_ func() bool                                        = f.IsDirectory
+		_ func() int64                                       = f.Size
+		_ func([]byte) (int, error)                          = f.Read
+		_ func([]byte, int64) (int, error)                   = f.ReadAt
+		_ func() ([]byte, error)                             = f.ReadAll
+		_ func() (string, error)                             = f.ReadLink
+		_ func() ([]libext.DirEntry, error)                  = f.ReadDir
+		_ func(libext.DirOptions) ([]libext.DirEntry, error) = f.ReadDirEx
+		_ func() ([]libext.Extent, error)                    = f.Extents
+		_ func() ([]libext.ByteRange, error)                 = f.DataRuns
+		_ func() libext.Inode                                = f.Inode
+		_ func() libext.Timestamps                           = f.Timestamps
 	)
 }

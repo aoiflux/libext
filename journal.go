@@ -1,7 +1,9 @@
 package libext
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -21,11 +23,11 @@ const journalMagic = 0xC03B3998
 
 // Journal block types.
 const (
-	JournalBlockTypeDescriptor  = 1
-	JournalBlockTypeCommit      = 2
+	JournalBlockTypeDescriptor   = 1
+	JournalBlockTypeCommit       = 2
 	JournalBlockTypeSuperblockV1 = 3
 	JournalBlockTypeSuperblockV2 = 4
-	JournalBlockTypeRevoke      = 5
+	JournalBlockTypeRevoke       = 5
 
 	// Retained for compatibility with earlier releases of this package. The
 	// values do not correspond to JBD2 block types.
@@ -96,29 +98,34 @@ func (j JournalSuperblock) HasFastCommit() bool {
 // JournalBlockTag names one filesystem block whose contents were journalled.
 type JournalBlockTag struct {
 	// FSBlock is the filesystem block this journalled copy belongs to.
-	FSBlock uint64
+	FSBlock uint64 `json:"fs_block"`
 	// JournalBlock is where the copy sits inside the journal.
-	JournalBlock uint64
-	Escaped      bool
-	SameUUID     bool
-	LastTag      bool
+	JournalBlock uint64 `json:"journal_block"`
+	Escaped      bool   `json:"escaped"`
+	SameUUID     bool   `json:"same_uuid"`
+	LastTag      bool   `json:"last_tag"`
 }
 
 // JournalTransaction represents a single transaction in the journal.
 type JournalTransaction struct {
-	Sequence   uint32
-	StartBlock uint32
-	Type       string
+	Sequence   uint32 `json:"sequence"`
+	StartBlock uint32 `json:"start_block"`
+	Type       string `json:"type"`
 
 	// Timestamp is the commit time, taken from the matching commit block. It is
 	// zero for a transaction whose commit block was never written, which itself
 	// says the transaction did not complete.
-	Timestamp   time.Time
-	IsCommitted bool
-	BlockCount  uint32
+	//
+	// It is omitted from the JSON rather than encoded as a zero time. A
+	// transaction that never committed has no commit time, and emitting one
+	// would invent the very event its absence is evidence against.
+	Timestamp   time.Time `json:"timestamp,omitzero"`
+	IsCommitted bool      `json:"is_committed"`
+	BlockCount  uint32    `json:"block_count"`
 
-	// Tags names the filesystem blocks this transaction carries copies of.
-	Tags []JournalBlockTag
+	// Tags names the filesystem blocks this transaction carries copies of. A
+	// revoke record carries none.
+	Tags []JournalBlockTag `json:"tags"`
 }
 
 // GetJournalLocation returns the location of the journal device.
@@ -188,11 +195,36 @@ func (fs *FS) JournalSuperblock() (*JournalSuperblock, error) {
 	return ParseJournalSuperblock(data)
 }
 
-// journalBlocks resolves the journal inode to the physical blocks holding it.
+// journalBlocks returns the physical blocks holding the journal, resolving them
+// on first use and sharing the result afterwards.
+//
+// The returned slice is shared, not copied: every caller in this package reads
+// it and none retains or mutates it. It is not exposed.
+func (fs *FS) journalBlocks() ([]uint64, error) {
+	fs.journalMu.RLock()
+	if fs.journalResolved {
+		blocks, err := fs.journalBlockSet, fs.journalErr
+		fs.journalMu.RUnlock()
+		return blocks, err
+	}
+	fs.journalMu.RUnlock()
+
+	fs.journalMu.Lock()
+	defer fs.journalMu.Unlock()
+	// Another goroutine may have resolved it between the two locks.
+	if fs.journalResolved {
+		return fs.journalBlockSet, fs.journalErr
+	}
+	fs.journalBlockSet, fs.journalErr = fs.resolveJournalBlocks()
+	fs.journalResolved = true
+	return fs.journalBlockSet, fs.journalErr
+}
+
+// resolveJournalBlocks maps the journal inode to the physical blocks holding it.
 //
 // The journal is read block by block through this list rather than loaded whole:
 // a 1 GiB journal is normal on a large filesystem.
-func (fs *FS) journalBlocks() ([]uint64, error) {
+func (fs *FS) resolveJournalBlocks() ([]uint64, error) {
 	num := fs.GetJournalInode()
 	if num == 0 {
 		return nil, fmt.Errorf("no journal inode found")
@@ -223,7 +255,19 @@ func (fs *FS) journalBlocks() ([]uint64, error) {
 //
 // Each descriptor block starts a transaction and names the filesystem blocks
 // whose copies follow it; the matching commit block supplies the time.
+//
+// Every block of the journal is read. That is a quarter of a million reads for
+// the 1 GiB journal a large filesystem carries, so prefer the Context form
+// where the caller may want to give up.
 func (fs *FS) ListJournalTransactions() ([]JournalTransaction, error) {
+	return fs.ListJournalTransactionsContext(context.Background())
+}
+
+// ListJournalTransactionsContext is ListJournalTransactions with cancellation.
+func (fs *FS) ListJournalTransactionsContext(ctx context.Context) ([]JournalTransaction, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
 	blocks, err := fs.journalBlocks()
 	if err != nil {
 		return nil, err
@@ -239,7 +283,18 @@ func (fs *FS) ListJournalTransactions() ([]JournalTransaction, error) {
 	// entry awaiting it rather than to just the last.
 	pending := make(map[uint32][]int)
 
+	// scanned counts from zero independently of i, which starts at 1: pacing off
+	// the loop index would put the first check at block 1024 and leave a short
+	// journal uncancellable.
+	scanned := 0
 	for i := 1; i < len(blocks); i++ {
+		if scanned%cancellationCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		scanned++
+
 		data, err := fs.readBlock(blocks[i])
 		if err != nil {
 			fs.warn(WarnDegradedRead, "journal",
@@ -322,8 +377,8 @@ func parseJournalTags(data []byte, jsb *JournalSuperblock, descriptorBlock uint6
 	}
 
 	var (
-		tags     []JournalBlockTag
-		off      = journalHeaderSize
+		tags      []JournalBlockTag
+		off       = journalHeaderSize
 		dataBlock = descriptorBlock
 	)
 
@@ -374,38 +429,24 @@ func parseJournalTags(data []byte, jsb *JournalSuperblock, descriptorBlock uint6
 // so this exposes prior states of metadata that the live filesystem has since
 // overwritten.
 func (fs *FS) JournalBlockCopies(fsBlock uint64) ([][]byte, error) {
-	transactions, err := fs.ListJournalTransactions()
-	if err != nil {
-		return nil, err
-	}
-	blocks, err := fs.journalBlocks()
-	if err != nil {
-		return nil, err
-	}
+	return fs.JournalBlockCopiesContext(context.Background(), fsBlock)
+}
 
-	var copies [][]byte
-	for i := len(transactions) - 1; i >= 0; i-- {
-		for _, tag := range transactions[i].Tags {
-			if tag.FSBlock != fsBlock {
-				continue
-			}
-			if tag.JournalBlock >= uint64(len(blocks)) {
-				continue
-			}
-			data, err := fs.readBlock(blocks[tag.JournalBlock])
-			if err != nil {
-				continue
-			}
-			if tag.Escaped && len(data) >= 4 {
-				// An escaped block had its first word replaced because it
-				// happened to start with the journal magic; restore it.
-				data = append([]byte(nil), data...)
-				binary.BigEndian.PutUint32(data[0:4], journalMagic)
-			}
-			copies = append(copies, data)
-		}
+// JournalBlockCopiesContext is JournalBlockCopies with cancellation.
+//
+// It walks the whole journal to find the copies, so it inherits the cost of
+// ListJournalTransactions - and pays it again on the next call. Asking about
+// more than a couple of blocks should go through BuildJournalIndex, which pays
+// it once.
+func (fs *FS) JournalBlockCopiesContext(ctx context.Context, fsBlock uint64) ([][]byte, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
 	}
-	return copies, nil
+	ix, err := fs.BuildJournalIndexContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ix.BlockCopies(fsBlock)
 }
 
 // JournalInodeVersions returns prior on-disk states of an inode, recovered from
@@ -414,36 +455,33 @@ func (fs *FS) JournalBlockCopies(fsBlock uint64) ([][]byte, error) {
 // This is what can resurrect a deleted file's extent tree: unlink zeroes the
 // tree in the live inode, but a journalled copy of the same block from before
 // the unlink still carries it.
+//
+// Each call walks the whole journal. Recovering more than a handful of inodes
+// should go through BuildJournalIndex, which walks it once.
 func (fs *FS) JournalInodeVersions(inodeNum uint32) ([]Inode, error) {
-	if inodeNum == 0 || inodeNum > fs.sb.InodesCount {
-		return nil, ErrInvalidInode
-	}
-	group := (inodeNum - 1) / fs.sb.InodesPerGroup
-	index := (inodeNum - 1) % fs.sb.InodesPerGroup
-	if group >= uint32(len(fs.groups)) {
-		return nil, ErrInvalidInode
-	}
+	return fs.JournalInodeVersionsContext(context.Background(), inodeNum)
+}
 
-	inodeSize := uint64(fs.sb.InodeSize)
-	blockSize := uint64(fs.sb.BlockSize)
-	byteOff := uint64(index) * inodeSize
-	block := fs.groups[group].InodeTableBlock + byteOff/blockSize
-	offInBlock := byteOff % blockSize
-
-	copies, err := fs.JournalBlockCopies(block)
+// JournalInodeVersionsContext is JournalInodeVersions with cancellation.
+//
+// Recovering the versions of many inodes this way costs one whole-journal walk
+// per inode, because each call re-reads the journal to find the copies of the
+// one inode-table block it needs. Use BuildJournalIndex and
+// JournalIndex.InodeVersions for more than a handful.
+func (fs *FS) JournalInodeVersionsContext(ctx context.Context, inodeNum uint32) ([]Inode, error) {
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	// Validated before the journal walk rather than after it, so an inode number
+	// that was never valid costs nothing to reject.
+	if _, _, err := fs.inodeTableLocation(inodeNum); err != nil {
+		return nil, err
+	}
+	ix, err := fs.BuildJournalIndexContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	var versions []Inode
-	for _, data := range copies {
-		if offInBlock+inodeSize > uint64(len(data)) {
-			continue
-		}
-		raw := data[offInBlock : offInBlock+inodeSize]
-		versions = append(versions, parseInode(raw, inodeNum))
-	}
-	return versions, nil
+	return ix.InodeVersions(inodeNum)
 }
 
 // DescribeJournalStatus returns human-readable journal status.

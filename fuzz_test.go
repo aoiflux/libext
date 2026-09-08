@@ -65,6 +65,28 @@ func FuzzOpen(f *testing.F) {
 		timed("DeletedEntries", func() {
 			_, _ = fs.DeletedEntriesWithOptions(DeletedScanOptions{MaxResults: 16})
 		})
+
+		// The tree walk and the index build are the two recursions in the library
+		// that a crafted image can drive: a directory reachable from itself, or a
+		// chain deeper than any real filesystem. Both carry a cycle guard and a
+		// depth cap, and both belong under the same budget as everything else.
+		timed("WalkDir", func() {
+			_ = fs.WalkDir(RootInode, func(string, DirEntry) error { return nil })
+		})
+		timed("WalkDirWithInode", func() {
+			_ = fs.WalkDirWithInode(RootInode, func(string, DirEntry, Inode) error { return nil })
+		})
+		timed("BuildPathIndex", func() { _, _ = fs.BuildPathIndex() })
+		timed("BuildJournalIndex", func() {
+			// A crafted journal superblock can claim any number of blocks and any
+			// tag layout, so the index build is as much an untrusted-input parser
+			// as the walk is.
+			if jx, err := fs.BuildJournalIndex(); err == nil {
+				_, _ = jx.BlockCopies(0)
+				_, _ = jx.InodeVersions(RootInode)
+			}
+		})
+		timed("PathFor", func() { _, _ = fs.PathFor(RootInode) })
 	})
 }
 
