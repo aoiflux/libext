@@ -6,15 +6,63 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
+// ReportSchemaVersion is the schema every EXTReport this package produces
+// declares in its SchemaVersion field.
+//
+// It is incremented when a field is removed, renamed, or changes meaning -
+// anything that could make a consumer written against an older version read a
+// document wrongly. Adding a field does not increment it, because a consumer
+// that ignores the new field still reads the document correctly.
+const ReportSchemaVersion = 1
+
+// LibraryVersion is the release of libext that produced a report, recorded on
+// every EXTReport so a document can be traced back to the code that wrote it.
+//
+// Nothing enforces this against the repository's tags: it must be updated in
+// the same commit that moves the tag, or it will claim a version that was never
+// released.
+const LibraryVersion = "v0.3.0"
+
 // EXTReport captures a filesystem-level view similar to common forensic report formats.
+//
+// # Reading an old report
+//
+// SchemaVersion, LibraryVersion and Generated exist because a report is
+// evidence, and evidence outlives the tool that produced it. A consumer should
+// check SchemaVersion against ReportSchemaVersion and refuse a document it does
+// not understand, rather than silently reading fields that may have changed
+// meaning.
 type EXTReport struct {
-	Name        string    `json:"name"`
-	StartOffset int64     `json:"start_offset"`
-	EndOffset   int64     `json:"end_offset"`
-	Filesystem  EXTMeta   `json:"ext_meta"`
-	Files       []EXTFile `json:"files"`
+	// SchemaVersion is ReportSchemaVersion, the schema this document follows.
+	SchemaVersion int `json:"schema_version"`
+	// LibraryVersion is the release of libext that produced this document, and
+	// Generated is when it was produced. Both are facts about the report, not
+	// about the volume - in particular Generated is not a timestamp read from
+	// the filesystem.
+	LibraryVersion string    `json:"library_version"`
+	Generated      time.Time `json:"generated"`
+
+	Name string `json:"name"`
+
+	// StartOffset and EndOffset bound the volume within the image, inclusive of
+	// EndOffset. Both include Options.BaseOffset and are therefore
+	// image-absolute, matching FileFragment and ByteRange: every offset this
+	// library reports is measured from the same origin.
+	StartOffset int64   `json:"start_offset"`
+	EndOffset   int64   `json:"end_offset"`
+	Filesystem  EXTMeta `json:"ext_meta"`
+
+	// Capabilities records what this volume's format can hold. It travels with
+	// the report so that a consumer reading the document later can tell a field
+	// the filesystem never records from one that was absent here - an ext2
+	// volume has no birth times at all, and without this a reader would see
+	// only that every crtime is missing.
+	Capabilities Capabilities `json:"capabilities"`
+
+	Files []EXTFile `json:"files"`
 }
 
 // EXTReportSummary provides common aggregate counters for a report.
@@ -30,7 +78,11 @@ type EXTReportSummary struct {
 type EXTMeta struct {
 	Type      string `json:"type"`
 	BlockSize int    `json:"block_size"`
-	Offset    int64  `json:"offset"`
+
+	// Offset is where the volume begins in the image: Options.BaseOffset, and
+	// so 0 for a reader already scoped to the volume. It is the origin every
+	// other offset in this report is measured from.
+	Offset int64 `json:"offset"`
 }
 
 // EXTFile describes one reachable inode-backed path in the filesystem tree.
@@ -169,17 +221,24 @@ func (fs *FS) ReportWithOptionsContext(ctx context.Context, name string, opts Re
 		return EXTReport{}, errors.New("context is nil")
 	}
 	sb := fs.Superblock()
+	// computeImageEndOffset measures from the start of the volume, so
+	// BaseOffset is added here rather than there: the clamp it performs is the
+	// only place that needs to reason about the int64 ceiling.
 	imageEnd := fs.computeImageEndOffset()
 	report := EXTReport{
-		Name:        name,
-		StartOffset: 0,
-		EndOffset:   imageEnd,
+		SchemaVersion:  ReportSchemaVersion,
+		LibraryVersion: LibraryVersion,
+		Generated:      time.Now().UTC(),
+		Name:           name,
+		StartOffset:    fs.opts.BaseOffset,
+		EndOffset:      imageEnd + fs.opts.BaseOffset,
 		Filesystem: EXTMeta{
 			Type:      string(fs.Kind()),
 			BlockSize: int(sb.BlockSize),
-			Offset:    0,
+			Offset:    fs.opts.BaseOffset,
 		},
-		Files: make([]EXTFile, 0, 128),
+		Capabilities: fs.Capabilities(),
+		Files:        make([]EXTFile, 0, 128),
 	}
 
 	if opts.DeepScan {

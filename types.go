@@ -50,6 +50,12 @@ const (
 	featureIncompatExtents  = 0x0040
 	featureIncompat64Bit    = 0x0080
 	featureIncompatCSumSeed = 0x2000
+	// featureIncompatInlineData and featureIncompatCasefold are read by
+	// Capabilities rather than by the parser: inline data is detected per inode
+	// from its flags (see inodeFlagInlineData), and casefolding changes only
+	// name comparison, which this read-only library never performs.
+	featureIncompatInlineData = 0x8000
+	featureIncompatCasefold   = 0x20000
 
 	featureRoCompatSparseSuper = 0x0001
 	featureRoCompatGDTChecksum = 0x0010

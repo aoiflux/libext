@@ -138,6 +138,16 @@ Constructors and volume access:
 - `(*FS).Kind() FSKind`
 - `(*FS).Superblock() Superblock`
 - `(*FS).GroupDescriptors() []GroupDescriptor`
+- `(*FS).Capabilities() Capabilities`
+
+`Capabilities` says what this volume can record, which is not the same question
+as what it does record: an ext2 volume has no journal and no birth times at all,
+so a consumer that cannot see the difference reports every file as having lost a
+creation date. Most fields are read from the superblock's feature flags rather
+than fixed by the format, so an ext2 volume and an ext4 volume answer
+differently — `Journaled`, `Extents`, `CreationTimes` and
+`SubSecondTimestamps` among them. Each field's doc comment says whether it is a
+fact about ext or state read from the volume in hand.
 
 Opening and traversal:
 
@@ -355,6 +365,20 @@ largeDeleted := report.FilterFiles(func(f libext.EXTFile) bool {
 _ = regular
 _ = largeDeleted
 ```
+
+Every report carries `schema_version`, `library_version` and `generated` at its
+root, plus the volume's `capabilities`. A report is evidence, and evidence
+outlives the tool that produced it: a consumer should compare `schema_version`
+against `ReportSchemaVersion` and refuse a document it does not understand
+rather than read fields whose meaning may have moved. The version is incremented
+when a field is removed, renamed, or changes meaning; adding a field does not
+increment it, because a consumer that ignores the addition still reads the
+document correctly.
+
+All offsets in a report share one origin. `start_offset`, `end_offset`,
+`ext_meta.offset` and every fragment offset include `Options.BaseOffset`, so a
+report of a partition opened from a whole-disk reader describes that partition
+where it actually sits.
 
 ## Platform Notes
 

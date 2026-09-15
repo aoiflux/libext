@@ -3,6 +3,7 @@ package libext
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // Report and journal JSON shape.
@@ -276,5 +277,115 @@ func TestJournalTransactionJSONKeepsCommittedTimestamp(t *testing.T) {
 	}
 	if _, ok := decoded["timestamp"]; !ok {
 		t.Errorf("a committed transaction dropped its timestamp: %s", raw)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// schema version, provenance and offset origin
+// ---------------------------------------------------------------------------
+
+func TestReportCarriesSchemaVersionAndProvenance(t *testing.T) {
+	fs := openFixture(t, buildNestedDirFixture(t), Options{})
+
+	before := time.Now().Add(-time.Second)
+	rep, err := fs.Report("t")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var round EXTReport
+	if err := json.Unmarshal(raw, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if round.SchemaVersion == 0 {
+		t.Errorf("SchemaVersion did not survive the round trip: %s", raw)
+	}
+	if round.SchemaVersion != ReportSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", round.SchemaVersion, ReportSchemaVersion)
+	}
+	if round.LibraryVersion != LibraryVersion {
+		t.Errorf("LibraryVersion = %q, want %q", round.LibraryVersion, LibraryVersion)
+	}
+	if round.Generated.Before(before) || round.Generated.After(time.Now().Add(time.Second)) {
+		t.Errorf("Generated = %v, which is not when this report was built", round.Generated)
+	}
+
+	// The capabilities travel with the document, so a consumer reading it years
+	// later can tell an absent birth time from a filesystem that records none.
+	if round.Capabilities != fs.Capabilities() {
+		t.Errorf("Capabilities did not survive: got %+v, want %+v", round.Capabilities, fs.Capabilities())
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal into map: %v", err)
+	}
+	for _, key := range []string{"schema_version", "library_version", "generated", "capabilities"} {
+		if _, ok := decoded[key]; !ok {
+			t.Errorf("report has no %q key: %s", key, raw)
+		}
+	}
+	if camelCaseKey.Match(raw) {
+		t.Errorf("report JSON has a camelCase key: %s", raw)
+	}
+}
+
+func TestReportOffsetsShareOneOriginWithBaseOffset(t *testing.T) {
+	// Every offset in a report must be measured from the same place. Before
+	// this, fragments included BaseOffset while the report's own span did not,
+	// so a report of a partition read from a whole-disk image described a
+	// volume at offset 0 whose files lived a partition-start further along.
+	const partitionStart = 1 << 20
+	img := buildNestedDirFixture(t)
+
+	base := openFixture(t, img, Options{})
+	shifted := openFixture(t, img, Options{BaseOffset: partitionStart})
+
+	repBase, err := base.Report("t")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	repShifted, err := shifted.Report("t")
+	if err != nil {
+		t.Fatalf("Report with BaseOffset: %v", err)
+	}
+
+	if got, want := repShifted.StartOffset-repBase.StartOffset, int64(partitionStart); got != want {
+		t.Errorf("StartOffset moved by %d, want %d", got, want)
+	}
+	if got, want := repShifted.EndOffset-repBase.EndOffset, int64(partitionStart); got != want {
+		t.Errorf("EndOffset moved by %d, want %d", got, want)
+	}
+	if got, want := repShifted.Filesystem.Offset-repBase.Filesystem.Offset, int64(partitionStart); got != want {
+		t.Errorf("ext_meta.offset moved by %d, want %d", got, want)
+	}
+	if repBase.StartOffset != 0 || repBase.Filesystem.Offset != 0 {
+		t.Errorf("a volume-scoped reader reported a non-zero origin: %d, %d",
+			repBase.StartOffset, repBase.Filesystem.Offset)
+	}
+
+	if len(repBase.Files) != len(repShifted.Files) {
+		t.Fatalf("file counts differ: %d and %d", len(repBase.Files), len(repShifted.Files))
+	}
+	var compared int
+	for i := range repBase.Files {
+		for j := range repBase.Files[i].Fragments {
+			b := repBase.Files[i].Fragments[j]
+			s := repShifted.Files[i].Fragments[j]
+			if s.StartOffset-b.StartOffset != partitionStart || s.EndOffset-b.EndOffset != partitionStart {
+				t.Errorf("%s fragment %d moved by %d..%d, want %d",
+					repBase.Files[i].Filename, j,
+					s.StartOffset-b.StartOffset, s.EndOffset-b.EndOffset, partitionStart)
+			}
+			compared++
+		}
+	}
+	if compared == 0 {
+		t.Fatal("the fixture produced no fragments, so nothing was compared")
 	}
 }

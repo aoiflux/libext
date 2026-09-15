@@ -36,7 +36,7 @@
 //	structure decoding superblock.go, group.go, inode.go, dir.go, blockmap.go,
 //	                   xattr.go, journal.go — on-disk structures to Go types
 //	analysis           extent.go, deleted.go, dirslack.go, orphan.go, path.go,
-//	                   journalindex.go, report.go
+//	                   journalindex.go, capabilities.go, report.go
 //	                                        — questions asked of those types
 //
 // Entry points live in ext.go. On-disk structures are plain data: they carry no
