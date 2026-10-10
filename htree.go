@@ -24,7 +24,7 @@ func (fs *FS) IsHTreeDirectory(inode *Inode) bool {
 	if !inode.IsDirectory {
 		return false
 	}
-	if (fs.sb.FeatureCompat & featureCompatDirIndex) == 0 {
+	if (fs.sb.FeatureCompat & CompatDirIndex) == 0 {
 		return false
 	}
 	// Directory size should be at least 8KB for HTree
@@ -40,7 +40,7 @@ func (fs *FS) DetectHTreeUsage(inode *Inode) (bool, error) {
 	if !inode.IsDirectory {
 		return false, nil
 	}
-	if (fs.sb.FeatureCompat & featureCompatDirIndex) == 0 {
+	if (fs.sb.FeatureCompat & CompatDirIndex) == 0 {
 		return false, nil
 	}
 	if inode.Size < 8192 {

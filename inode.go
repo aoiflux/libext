@@ -37,67 +37,28 @@ func (fs *FS) readInodeRaw(inodeNum uint32) ([]byte, error) {
 	return raw, nil
 }
 
-// Inode field offsets. Named because several of them are easy to transpose and
-// the consequences are silent rather than loud.
-const (
-	inodeOffMode        = 0x00
-	inodeOffUIDLo       = 0x02
-	inodeOffSizeLo      = 0x04
-	inodeOffAtime       = 0x08
-	inodeOffCtime       = 0x0C
-	inodeOffMtime       = 0x10
-	inodeOffDtime       = 0x14
-	inodeOffGIDLo       = 0x18
-	inodeOffLinksCount  = 0x1A
-	inodeOffBlocksLo    = 0x1C
-	inodeOffFlags       = 0x20
-	inodeOffBlockRaw    = 0x28
-	inodeOffGeneration  = 0x64
-	inodeOffFileACLLo   = 0x68
-	inodeOffSizeHi      = 0x6C
-	inodeOffBlocksHi    = 0x74 // osd2.linux2.l_i_blocks_hi
-	inodeOffFileACLHi   = 0x76 // osd2.linux2.l_i_file_acl_high
-	inodeOffUIDHi       = 0x78
-	inodeOffGIDHi       = 0x7A
-	inodeOffExtraISize  = 0x80
-	inodeOffCtimeExtra  = 0x84
-	inodeOffMtimeExtra  = 0x88
-	inodeOffAtimeExtra  = 0x8C
-	inodeOffCrtime      = 0x90
-	inodeOffCrtimeExtra = 0x94
-	inodeOffProjectID   = 0x9C
-
-	// inodeBaseSize is the size of the fixed part; anything beyond it exists
-	// only when i_extra_isize says so.
-	inodeBaseSize = 128
-)
-
-// inodeFlagHugeFile makes i_blocks count filesystem blocks instead of 512-byte
-// sectors.
-const inodeFlagHugeFile = 0x00040000
-
 func parseInode(raw []byte, inodeNum uint32) Inode {
-	mode := le16(raw, inodeOffMode)
-	flags := le32(raw, inodeOffFlags)
-	sizeLo := le32(raw, inodeOffSizeLo)
-	sizeHi := le32(raw, inodeOffSizeHi)
+	mode := le16(raw, InodeOffMode)
+	flags := le32(raw, InodeOffFlags)
+	sizeLo := le32(raw, InodeOffSizeLo)
+	sizeHi := le32(raw, InodeOffSizeHi)
 
-	uid := uint32(le16(raw, inodeOffUIDLo))
-	gid := uint32(le16(raw, inodeOffGIDLo))
-	blocks := uint64(le32(raw, inodeOffBlocksLo))
-	fileACL := uint64(le32(raw, inodeOffFileACLLo))
+	uid := uint32(le16(raw, InodeOffUIDLo))
+	gid := uint32(le16(raw, InodeOffGIDLo))
+	blocks := uint64(le32(raw, InodeOffBlocksLo))
+	fileACL := uint64(le32(raw, InodeOffFileACLLo))
 
-	if len(raw) >= inodeBaseSize {
-		uid |= uint32(le16(raw, inodeOffUIDHi)) << 16
-		gid |= uint32(le16(raw, inodeOffGIDHi)) << 16
+	if len(raw) >= GoodOldInodeSize {
+		uid |= uint32(le16(raw, InodeOffUIDHi)) << 16
+		gid |= uint32(le16(raw, InodeOffGIDHi)) << 16
 		// The high halves live in osd2 and were previously dropped, which put
 		// large-volume xattr blocks out of reach and truncated block counts.
-		blocks |= uint64(le16(raw, inodeOffBlocksHi)) << 32
-		fileACL |= uint64(le16(raw, inodeOffFileACLHi)) << 32
+		blocks |= uint64(le16(raw, InodeOffBlocksHi)) << 32
+		fileACL |= uint64(le16(raw, InodeOffFileACLHi)) << 32
 	}
 
-	isDir := (mode & inodeModeTypeMask) == inodeTypeDir
-	isRegular := (mode & inodeModeTypeMask) == inodeTypeRegular
+	isDir := (mode & ModeTypeMask) == ModeDir
+	isRegular := (mode & ModeTypeMask) == ModeRegular
 
 	// i_size_high is i_dir_acl for directories on ext2/ext3. Only widen the size
 	// where the field really is the high word.
@@ -112,28 +73,28 @@ func parseInode(raw []byte, inodeNum uint32) Inode {
 		UID:         uid,
 		GID:         gid,
 		Size:        size,
-		LinksCount:  le16(raw, inodeOffLinksCount),
+		LinksCount:  le16(raw, InodeOffLinksCount),
 		Blocks512:   blocks,
 		Flags:       flags,
-		Generation:  le32(raw, inodeOffGeneration),
+		Generation:  le32(raw, InodeOffGeneration),
 		FileACL:     fileACL,
-		HasExtents:  (flags & inodeFlagExtents) != 0,
-		HasInline:   (flags & inodeFlagInlineData) != 0,
-		HugeFile:    (flags & inodeFlagHugeFile) != 0,
+		HasExtents:  (flags & InodeFlagExtents) != 0,
+		HasInline:   (flags & InodeFlagInlineData) != 0,
+		HugeFile:    (flags & InodeFlagHugeFile) != 0,
 		IsDirectory: isDir,
 		IsRegular:   isRegular,
-		IsSymlink:   (mode & inodeModeTypeMask) == inodeTypeSymlink,
+		IsSymlink:   (mode & ModeTypeMask) == ModeSymlink,
 	}
-	copy(inode.BlockRaw[:], raw[inodeOffBlockRaw:inodeOffBlockRaw+60])
+	copy(inode.BlockRaw[:], raw[InodeOffBlockRaw:InodeOffBlockRaw+60])
 
 	// The v1 timestamps are 32-bit seconds. ext4 widens them with a companion
 	// "extra" word whose low two bits extend the epoch and whose upper 30 bits
 	// carry nanoseconds. Without it every timestamp past 2038-01-19 decodes as a
 	// pre-1970 date.
 	extraEnd := 0
-	if len(raw) > inodeOffExtraISize+2 {
-		inode.ExtraISize = le16(raw, inodeOffExtraISize)
-		extraEnd = inodeBaseSize + int(inode.ExtraISize)
+	if len(raw) > InodeOffExtraISize+2 {
+		inode.ExtraISize = le16(raw, InodeOffExtraISize)
+		extraEnd = GoodOldInodeSize + int(inode.ExtraISize)
 		if extraEnd > len(raw) {
 			extraEnd = len(raw)
 		}
@@ -141,20 +102,20 @@ func parseInode(raw []byte, inodeNum uint32) Inode {
 
 	hasExtra := func(off int) bool { return off+4 <= extraEnd }
 
-	inode.Atime = decodeTime(le32(raw, inodeOffAtime), extraAt(raw, inodeOffAtimeExtra, hasExtra))
-	inode.Ctime = decodeTime(le32(raw, inodeOffCtime), extraAt(raw, inodeOffCtimeExtra, hasExtra))
-	inode.Mtime = decodeTime(le32(raw, inodeOffMtime), extraAt(raw, inodeOffMtimeExtra, hasExtra))
+	inode.Atime = decodeTime(le32(raw, InodeOffAtime), extraAt(raw, InodeOffAtimeExtra, hasExtra))
+	inode.Ctime = decodeTime(le32(raw, InodeOffCtime), extraAt(raw, InodeOffCtimeExtra, hasExtra))
+	inode.Mtime = decodeTime(le32(raw, InodeOffMtime), extraAt(raw, InodeOffMtimeExtra, hasExtra))
 
 	// Deletion time has no extra word: it is always 32-bit seconds.
-	inode.DtimeRaw = le32(raw, inodeOffDtime)
+	inode.DtimeRaw = le32(raw, InodeOffDtime)
 	inode.Dtime = unixTime(inode.DtimeRaw)
 
-	if hasExtra(inodeOffCrtime) {
-		inode.Crtime = decodeTime(le32(raw, inodeOffCrtime), extraAt(raw, inodeOffCrtimeExtra, hasExtra))
+	if hasExtra(InodeOffCrtime) {
+		inode.Crtime = decodeTime(le32(raw, InodeOffCrtime), extraAt(raw, InodeOffCrtimeExtra, hasExtra))
 		inode.HasCrtime = true
 	}
-	if hasExtra(inodeOffProjectID) {
-		inode.ProjectID = le32(raw, inodeOffProjectID)
+	if hasExtra(InodeOffProjectID) {
+		inode.ProjectID = le32(raw, InodeOffProjectID)
 	}
 
 	return inode

@@ -477,7 +477,7 @@ func (fs *FS) checkFeatures() error {
 	// s_checksum_seed is honoured when present. Warn only when the feature is
 	// claimed but no seed was stored, since checksums would then be verified
 	// against the volume UUID and report mismatches for every structure.
-	if (fs.sb.FeatureIncompat&featureIncompatCSumSeed) != 0 && fs.sb.ChecksumSeed == 0 {
+	if (fs.sb.FeatureIncompat&IncompatCSumSeed) != 0 && fs.sb.ChecksumSeed == 0 {
 		fs.warn(WarnChecksumMismatch, "incompat:CSUM_SEED",
 			"CSUM_SEED is set but s_checksum_seed is zero; falling back to the volume UUID may report false mismatches")
 	}

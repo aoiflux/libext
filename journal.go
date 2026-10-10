@@ -130,7 +130,7 @@ type JournalTransaction struct {
 
 // GetJournalLocation returns the location of the journal device.
 func (fs *FS) GetJournalLocation() (journalBlock uint32, isExternal bool, err error) {
-	if (fs.sb.FeatureCompat & featureCompatHasJournal) == 0 {
+	if (fs.sb.FeatureCompat & CompatHasJournal) == 0 {
 		return 0, false, fmt.Errorf("journal feature not enabled")
 	}
 	if fs.sb.JournalInode != 0 {
@@ -141,7 +141,7 @@ func (fs *FS) GetJournalLocation() (journalBlock uint32, isExternal bool, err er
 
 // GetJournalInode returns the inode number of the journal.
 func (fs *FS) GetJournalInode() uint32 {
-	if (fs.sb.FeatureCompat & featureCompatHasJournal) == 0 {
+	if (fs.sb.FeatureCompat & CompatHasJournal) == 0 {
 		return 0
 	}
 	return fs.sb.JournalInode
@@ -504,8 +504,8 @@ func (fs *FS) DescribeJournalStatus() (string, error) {
 // GetJournalFeatures returns journal-related features.
 func (fs *FS) GetJournalFeatures() map[string]bool {
 	features := map[string]bool{
-		"has_journal":    fs.sb.FeatureCompat&featureCompatHasJournal != 0,
-		"needs_recovery": fs.sb.FeatureIncompat&featureIncompatRecover != 0,
+		"has_journal":    fs.sb.FeatureCompat&CompatHasJournal != 0,
+		"needs_recovery": fs.sb.FeatureIncompat&IncompatRecover != 0,
 	}
 
 	// The journal's own feature flags live in its superblock, not the

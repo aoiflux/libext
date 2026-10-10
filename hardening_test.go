@@ -41,7 +41,7 @@ func defaultSBConfig() sbConfig {
 		logBlockSize:   0, // 1 KiB blocks, so the descriptor table sits at 2048
 		inodeSize:      128,
 		revision:       1,
-		incompat:       featureIncompatFileType,
+		incompat:       IncompatFiletype,
 	}
 }
 
@@ -51,7 +51,7 @@ func buildTestImage(t testing.TB, cfg sbConfig) []byte {
 	t.Helper()
 
 	img := make([]byte, 1<<20)
-	sb := img[superblockOffset : superblockOffset+superblockSize]
+	sb := img[SuperblockOffset : SuperblockOffset+SuperblockSize]
 
 	binary.LittleEndian.PutUint32(sb[0x00:], cfg.inodesCount)
 	binary.LittleEndian.PutUint32(sb[0x04:], uint32(cfg.blocksCount))
@@ -59,7 +59,7 @@ func buildTestImage(t testing.TB, cfg sbConfig) []byte {
 	binary.LittleEndian.PutUint32(sb[0x18:], cfg.logBlockSize)
 	binary.LittleEndian.PutUint32(sb[0x20:], cfg.blocksPerGroup)
 	binary.LittleEndian.PutUint32(sb[0x28:], cfg.inodesPerGroup)
-	binary.LittleEndian.PutUint16(sb[0x38:], extMagic)
+	binary.LittleEndian.PutUint16(sb[0x38:], Magic)
 	binary.LittleEndian.PutUint16(sb[0x3A:], 1) // clean
 	binary.LittleEndian.PutUint32(sb[0x4C:], cfg.revision)
 	binary.LittleEndian.PutUint32(sb[0x54:], 11)
@@ -363,8 +363,8 @@ func TestOpenUnknownBitWarnsPerFeatureSet(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func extentHeader(entries, max, depth uint16) []byte {
-	h := make([]byte, extentHeaderSize)
-	binary.LittleEndian.PutUint16(h[0:], extentHeaderMagic)
+	h := make([]byte, ExtentHeaderSize)
+	binary.LittleEndian.PutUint16(h[0:], ExtentMagic)
 	binary.LittleEndian.PutUint16(h[2:], entries)
 	binary.LittleEndian.PutUint16(h[4:], max)
 	binary.LittleEndian.PutUint16(h[6:], depth)
@@ -372,7 +372,7 @@ func extentHeader(entries, max, depth uint16) []byte {
 }
 
 func extentLeafEntry(logical uint32, length uint16, phys uint64) []byte {
-	e := make([]byte, extentEntrySize)
+	e := make([]byte, ExtentEntrySize)
 	binary.LittleEndian.PutUint32(e[0:], logical)
 	binary.LittleEndian.PutUint16(e[4:], length)
 	binary.LittleEndian.PutUint16(e[6:], uint16(phys>>32))
@@ -381,7 +381,7 @@ func extentLeafEntry(logical uint32, length uint16, phys uint64) []byte {
 }
 
 func extentIndexEntry(logical uint32, leaf uint64) []byte {
-	e := make([]byte, extentEntrySize)
+	e := make([]byte, ExtentEntrySize)
 	binary.LittleEndian.PutUint32(e[0:], logical)
 	binary.LittleEndian.PutUint32(e[4:], uint32(leaf))
 	binary.LittleEndian.PutUint16(e[8:], uint16(leaf>>32))
@@ -582,7 +582,7 @@ func damagedDirData() []byte {
 }
 
 func TestParseDirEntriesReturnsPartialResults(t *testing.T) {
-	fs := &FS{sb: Superblock{FeatureIncompat: featureIncompatFileType}}
+	fs := &FS{sb: Superblock{FeatureIncompat: IncompatFiletype}}
 
 	entries, err := fs.parseDirEntries(damagedDirData())
 	if err == nil {
@@ -598,7 +598,7 @@ func TestParseDirEntriesReturnsPartialResults(t *testing.T) {
 
 func TestParseDirEntriesResynchronisesWhenPermissive(t *testing.T) {
 	fs := &FS{
-		sb:   Superblock{FeatureIncompat: featureIncompatFileType},
+		sb:   Superblock{FeatureIncompat: IncompatFiletype},
 		opts: Options{Permissive: true},
 	}
 
@@ -622,7 +622,7 @@ func TestParseDirEntriesResynchronisesWhenPermissive(t *testing.T) {
 func TestParseDirEntriesStopsAtZeroRecordLength(t *testing.T) {
 	// A zero record length terminates the stream; it is a truncated tail, not
 	// damage, and must not be reported as an error.
-	fs := &FS{sb: Superblock{FeatureIncompat: featureIncompatFileType}}
+	fs := &FS{sb: Superblock{FeatureIncompat: IncompatFiletype}}
 
 	data := append(dirent(1, 12, 1, "a"), make([]byte, 16)...)
 
@@ -636,7 +636,7 @@ func TestParseDirEntriesStopsAtZeroRecordLength(t *testing.T) {
 }
 
 func TestParseDirEntriesRejectsUnalignedRecord(t *testing.T) {
-	fs := &FS{sb: Superblock{FeatureIncompat: featureIncompatFileType}}
+	fs := &FS{sb: Superblock{FeatureIncompat: IncompatFiletype}}
 
 	data := append(dirent(1, 12, 1, "a"), dirent(2, 13, 1, "b")...)
 
@@ -653,7 +653,7 @@ func TestOpenWarnsOnChecksumSeedFeature(t *testing.T) {
 	// With CSUM_SEED set, checksums are keyed on s_checksum_seed rather than the
 	// volume UUID, so verifying against the UUID reports false mismatches.
 	cfg := defaultSBConfig()
-	cfg.incompat |= featureIncompatCSumSeed
+	cfg.incompat |= IncompatCSumSeed
 	img := buildTestImage(t, cfg)
 
 	fs, err := Open(bytes.NewReader(img))
@@ -696,7 +696,7 @@ func TestReportDeepToleratesUnreadableBlockMap(t *testing.T) {
 		garbage[i] = 0xAB
 	}
 	// Regular file, non-zero size, extent-mapped flag set, unparseable tree.
-	writeTestInode(img, 12, 0x81A4, 4096, inodeFlagExtents, garbage)
+	writeTestInode(img, 12, 0x81A4, 4096, InodeFlagExtents, garbage)
 
 	fs, err := Open(bytes.NewReader(img))
 	if err != nil {

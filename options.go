@@ -35,6 +35,30 @@ type Options struct {
 	// warning to a hard error.
 	VerifyChecksums bool
 
+	// Strict rejects an image that is readable but not well formed, the way a
+	// writer that wants its output checked needs it rejected. It implies
+	// VerifyChecksums, and adds the checks the kernel makes that libext
+	// otherwise tolerates:
+	//
+	//   - the checksum tail of every extent tree block and directory leaf block,
+	//     on a metadata_csum filesystem
+	//   - a hole, an unwritten run, or fewer mapped blocks than the size needs,
+	//     in a regular file, directory or slow symlink being read
+	//   - a leaf extent running past the end of the filesystem
+	//   - two entries with the same name in one directory
+	//   - a named entry whose inode has no links or a deletion time, and an
+	//     entry whose inode cannot be read, during WalkDir and its variants
+	//   - a regular file, directory or slow symlink mapped by block pointers
+	//     rather than extents or inline data on a filesystem with the extents
+	//     feature. A filesystem converted from ext3 legitimately keeps such
+	//     inodes, so Strict rejects it.
+	//
+	// A failed check returns a *StrictError, which wraps ErrStrict, and
+	// ErrChecksumMismatch as well when the check is a checksum. Strict changes
+	// nothing for a caller that does not set it. It is meant for verifying
+	// images, not for recovering data from damaged ones: leave it off for that.
+	Strict bool
+
 	// MaxExtents caps the number of extent records parsed for a single inode.
 	// 0 selects the library default.
 	MaxExtents int

@@ -94,8 +94,8 @@ func (fs *FS) inlineDirEntries(inode Inode, data []byte) ([]DirEntry, error) {
 
 	parent := le32(data, 0)
 	entries := []DirEntry{
-		{Inode: inode.Number, Name: ".", FileType: extDirentTypeDirectory, IsDirectory: true},
-		{Inode: parent, Name: "..", FileType: extDirentTypeDirectory, IsDirectory: true},
+		{Inode: inode.Number, Name: ".", FileType: FileTypeDir, IsDirectory: true},
+		{Inode: parent, Name: "..", FileType: FileTypeDir, IsDirectory: true},
 	}
 
 	rest, err := fs.parseDirEntries(data[4:])
@@ -114,7 +114,7 @@ type inodeXAttr struct {
 // parseInodeXAttrs reads the attributes stored in an inode's own xattr area,
 // which begins after the fixed 128-byte inode and the extra fields.
 func parseInodeXAttrs(raw []byte, extraISize uint16) ([]inodeXAttr, error) {
-	start := inodeBaseSize + int(extraISize)
+	start := GoodOldInodeSize + int(extraISize)
 	if start+4 > len(raw) {
 		return nil, nil
 	}

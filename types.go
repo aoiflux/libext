@@ -3,10 +3,6 @@ package libext
 import "time"
 
 const (
-	superblockOffset = 1024
-	superblockSize   = 1024
-	extMagic         = 0xEF53
-
 	// maxBlockGroups bounds the group count derived from superblock geometry.
 	// 2^24 groups is roughly 2 PB at a 4 KiB block size with 32768 blocks per
 	// group; anything larger indicates a corrupt or crafted superblock.
@@ -21,46 +17,6 @@ const (
 	FSKindExt2    FSKind = "ext2"
 	FSKindExt3    FSKind = "ext3"
 	FSKindExt4    FSKind = "ext4"
-)
-
-const (
-	inodeModeTypeMask = 0xF000
-	inodeTypeFIFO     = 0x1000
-	inodeTypeChar     = 0x2000
-	inodeTypeDir      = 0x4000
-	inodeTypeBlock    = 0x6000
-	inodeTypeRegular  = 0x8000
-	inodeTypeSymlink  = 0xA000
-	inodeTypeSocket   = 0xC000
-)
-
-const (
-	inodeFlagExtents    = 0x00080000
-	inodeFlagInlineData = 0x10000000
-)
-
-const (
-	featureCompatHasJournal = 0x0004
-	featureCompatExtAttr    = 0x0008
-	featureCompatDirIndex   = 0x0020
-	featureCompatOrphanFile = 0x1000
-
-	featureIncompatRecover  = 0x0004
-	featureIncompatFileType = 0x0002
-	featureIncompatExtents  = 0x0040
-	featureIncompat64Bit    = 0x0080
-	featureIncompatCSumSeed = 0x2000
-	// featureIncompatInlineData and featureIncompatCasefold are read by
-	// Capabilities rather than by the parser: inline data is detected per inode
-	// from its flags (see inodeFlagInlineData), and casefolding changes only
-	// name comparison, which this read-only library never performs.
-	featureIncompatInlineData = 0x8000
-	featureIncompatCasefold   = 0x20000
-
-	featureRoCompatSparseSuper = 0x0001
-	featureRoCompatGDTChecksum = 0x0010
-	featureRoCompatBigalloc    = 0x0200
-	featureRoCompatMetadataCS  = 0x0400
 )
 
 // Superblock contains the subset of EXT superblock fields needed by this parser.
@@ -154,6 +110,12 @@ type Inode struct {
 
 	// Atime, Ctime and Mtime carry nanosecond precision and dates beyond 2038
 	// when the inode is large enough to hold the extra words; check ExtraISize.
+	//
+	// A zero time.Time here, and in Crtime, means the field's base and extra
+	// words were both zero on disk. The kernel reads that as
+	// 1970-01-01T00:00:00Z; it is reported as zero because it is far more often
+	// a field nobody set. A caller that needs the kernel's reading maps IsZero
+	// to time.Unix(0, 0), or decodes the raw words with DecodeTime.
 	Atime time.Time
 	Ctime time.Time
 	Mtime time.Time

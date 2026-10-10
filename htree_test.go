@@ -136,7 +136,7 @@ func TestIsHTreeDirectory(t *testing.T) {
 	// Create a mock FS with DIR_INDEX feature
 	fs := &FS{
 		sb: Superblock{
-			FeatureCompat: featureCompatDirIndex,
+			FeatureCompat: CompatDirIndex,
 			BlockSize:     4096,
 		},
 	}
@@ -175,7 +175,7 @@ func TestIsHTreeDirectory(t *testing.T) {
 func TestDetectHTreeUsage(t *testing.T) {
 	fs := &FS{
 		sb: Superblock{
-			FeatureCompat: featureCompatDirIndex,
+			FeatureCompat: CompatDirIndex,
 			BlockSize:     4096,
 		},
 		r:         bytes.NewReader(make([]byte, 8192*10)),
@@ -209,7 +209,7 @@ func TestDetectHTreeUsage(t *testing.T) {
 
 	// Test case 3: Directory too small
 	inode.Size = 4096
-	fs.sb.FeatureCompat = featureCompatDirIndex
+	fs.sb.FeatureCompat = CompatDirIndex
 	isHTree, err = fs.DetectHTreeUsage(inode)
 	if err != nil || isHTree {
 		t.Error("Expected false for small directory")

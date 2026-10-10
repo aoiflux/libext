@@ -25,7 +25,7 @@ type File struct {
 // blockMap resolves and caches the file's block map.
 func (f *File) blockMap() ([]Extent, error) {
 	if !f.mapped {
-		f.extents, f.extentsErr = f.volume.InodeExtents(f.inode, ExtentOptions{})
+		f.extents, f.extentsErr = f.volume.dataMap(f.inode)
 		f.mapped = true
 	}
 	return f.extents, f.extentsErr
@@ -106,7 +106,9 @@ func (f *File) ReadLink() (string, error) {
 		return "", ErrNotSymlink
 	}
 
-	if f.inode.Size <= 60 {
+	// The inline test is the inode's block ownership, not its size: a 60-byte
+	// target is stored in a block, and i_block then holds that block's map.
+	if f.volume.isFastSymlink(f.inode) {
 		raw := f.inode.BlockRaw[:f.inode.Size]
 		return string(raw), nil
 	}
@@ -195,11 +197,25 @@ func (fs *FS) readInodeData(inode Inode) ([]byte, error) {
 }
 
 func (fs *FS) readInodeDataAt(inode Inode, off uint64, out []byte) (int, error) {
-	exts, err := fs.InodeExtents(inode, ExtentOptions{})
+	exts, err := fs.dataMap(inode)
 	if err != nil {
 		return 0, fmt.Errorf("inode %d block map: %w", inode.Number, err)
 	}
 	return fs.readInodeDataAtMapped(inode, exts, off, out)
+}
+
+// dataMap is the block map a read of the inode's contents is served from. It
+// is InodeExtents plus, under Options.Strict, the refusal of a map that leaves
+// part of the file without written data.
+func (fs *FS) dataMap(inode Inode) ([]Extent, error) {
+	exts, err := fs.InodeExtents(inode, ExtentOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := fs.strictCheckMap(inode, exts); err != nil {
+		return nil, err
+	}
+	return exts, nil
 }
 
 // readInodeDataAtMapped serves a read from an already-resolved block map.

@@ -32,7 +32,8 @@
 //
 // The package is arranged in three layers, and code stays within its own:
 //
-//	binary decoding    util.go, layout.go   — offsets, endianness, bounds
+//	binary decoding    util.go, layout.go, constants.go, checksum.go,
+//	                   timestamp.go         — offsets, values, codecs, bounds
 //	structure decoding superblock.go, group.go, inode.go, dir.go, blockmap.go,
 //	                   xattr.go, journal.go — on-disk structures to Go types
 //	analysis           extent.go, deleted.go, dirslack.go, orphan.go, path.go,
@@ -126,4 +127,36 @@
 // Options.Permissive downgrades those refusals to warnings for cases where a
 // partial answer beats none. Whatever the setting, Warnings reports where the
 // answer may be incomplete.
+//
+// # Verifying well-formed images
+//
+// The default is tolerant: a parser for evidence has to read what it is given.
+// Options.Strict is the opposite stance, for a caller checking an image it
+// expects to be well formed - typically one a program of its own just wrote.
+// It implies VerifyChecksums, and adds the checksum tails of extent tree and
+// directory blocks, and refuses holes, unwritten runs and short maps in data
+// being read, extents past the end of the filesystem, duplicate names, named
+// inodes that are unlinked or deleted, and block-mapped inodes on an extents
+// filesystem. A refusal is a *StrictError wrapping ErrStrict:
+//
+//	vol, err := libext.OpenWithOptions(r, libext.Options{Strict: true})
+//	...
+//	err = vol.WalkDirWithInode(libext.RootInode, visit)
+//	var se *libext.StrictError
+//	if errors.As(err, &se) {
+//		log.Printf("inode %d fails %s: %s", se.Inode, se.Check, se.Detail)
+//	}
+//
+// # Constants and codecs
+//
+// The on-disk values this package reads by - feature bits, mode bits, inode
+// flags, and the byte offset of every superblock, group descriptor and inode
+// field - are exported, together with pure codecs that turn one value or one
+// structure into bytes or a checksum: CRC32C, MetadataSeed,
+// SuperblockChecksum, GroupDescChecksum, InodeChecksum, BitmapChecksum,
+// ExtentTailChecksum, DirTailChecksum, EncodeTime, DecodeTime, HasSuperBackup
+// and DirRecLen. Each follows the kernel function its comment names, and none
+// touches an image, so a program writing ext4 can stamp its structures with
+// the same code this package verifies them with. The package itself still
+// writes nothing.
 package libext

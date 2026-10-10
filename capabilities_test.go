@@ -24,13 +24,13 @@ func ext2SBConfig() sbConfig {
 func ext4SBConfig() sbConfig {
 	cfg := defaultSBConfig()
 	cfg.inodeSize = 256
-	cfg.compat = featureCompatHasJournal | featureCompatDirIndex | featureCompatExtAttr
-	cfg.incompat = featureIncompatFileType | featureIncompatExtents |
-		featureIncompat64Bit | featureIncompatInlineData
+	cfg.compat = CompatHasJournal | CompatDirIndex | CompatExtAttr
+	cfg.incompat = IncompatFiletype | IncompatExtents |
+		Incompat64Bit | IncompatInlineData
 	// BIGALLOC is deliberately absent: Open refuses it outright, so a fixture
 	// carrying it could not be opened at all. TestCapabilitiesBigallocNeedsPermissive
 	// covers that field on its own.
-	cfg.roCompat = featureRoCompatMetadataCS
+	cfg.roCompat = ROCompatMetadataCsum
 	return cfg
 }
 
@@ -40,7 +40,7 @@ func ext4SBConfig() sbConfig {
 func buildExt4Image(t testing.TB) []byte {
 	t.Helper()
 	img := buildTestImage(t, ext4SBConfig())
-	binary.LittleEndian.PutUint32(img[superblockOffset+sbOffJournalInode:], 8)
+	binary.LittleEndian.PutUint32(img[SuperblockOffset+SbOffJournalInode:], 8)
 	return img
 }
 
@@ -101,7 +101,7 @@ func TestCapabilitiesJournalOnAnotherDeviceIsNotReadable(t *testing.T) {
 	// looks like from here: the volume has a journal, but not one this library
 	// can reach, and reporting true would promise transactions it cannot read.
 	cfg := defaultSBConfig()
-	cfg.compat = featureCompatHasJournal
+	cfg.compat = CompatHasJournal
 	fs := openFixture(t, buildTestImage(t, cfg), Options{})
 
 	if fs.Capabilities().Journaled {
@@ -111,7 +111,7 @@ func TestCapabilitiesJournalOnAnotherDeviceIsNotReadable(t *testing.T) {
 
 func TestCapabilitiesCaseFoldingVolumeIsNotCaseSensitive(t *testing.T) {
 	cfg := defaultSBConfig()
-	cfg.incompat = featureIncompatFileType | featureIncompatCasefold
+	cfg.incompat = IncompatFiletype | IncompatCasefold
 	fs := openFixture(t, buildTestImage(t, cfg), Options{})
 
 	if fs.Capabilities().CaseSensitive {
@@ -124,7 +124,7 @@ func TestCapabilitiesBigallocNeedsPermissive(t *testing.T) {
 	// reports are cluster-based rather than block-based. Capabilities is where
 	// a caller learns that, so the field has to survive the permissive path.
 	cfg := defaultSBConfig()
-	cfg.roCompat = featureRoCompatBigalloc
+	cfg.roCompat = ROCompatBigalloc
 	img := buildTestImage(t, cfg)
 
 	if _, err := OpenWithOptions(newFixtureReader(img), Options{}); err == nil {

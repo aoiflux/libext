@@ -16,14 +16,14 @@ func bitmapFixture(t testing.TB, bitmap []byte, kind string) *FS {
 
 	fs := &FS{
 		sb: Superblock{
-			FeatureROCompat: featureRoCompatMetadataCS,
+			FeatureROCompat: ROCompatMetadataCsum,
 			UUID:            [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 			GroupDescSize:   32,
 		},
 		groups: []GroupDescriptor{{BlockBitmapBlock: 1, InodeBitmapBlock: 2}},
 	}
 
-	csum := extCRC32C(fs.csumSeed(), bitmap) & 0xFFFF
+	csum := CRC32C(fs.csumSeed(), bitmap) & 0xFFFF
 	switch kind {
 	case "block":
 		fs.groups[0].BlockBitmapChecksum = csum
@@ -70,7 +70,7 @@ func TestVerifyInodeBitmapChecksum(t *testing.T) {
 // is meaningless rather than evidence of corruption.
 func TestVerifyBitmapChecksumSkipsUninitGroup(t *testing.T) {
 	fs := &FS{
-		sb:     Superblock{FeatureROCompat: featureRoCompatMetadataCS, GroupDescSize: 32},
+		sb:     Superblock{FeatureROCompat: ROCompatMetadataCsum, GroupDescSize: 32},
 		groups: []GroupDescriptor{{Flags: GroupBlockUninit | GroupInodeUninit}},
 	}
 
@@ -98,7 +98,7 @@ func TestVerifyBitmapChecksumDisabled(t *testing.T) {
 
 func TestVerifyBitmapChecksumInvalidGroup(t *testing.T) {
 	fs := &FS{
-		sb:     Superblock{FeatureROCompat: featureRoCompatMetadataCS, GroupDescSize: 32},
+		sb:     Superblock{FeatureROCompat: ROCompatMetadataCsum, GroupDescSize: 32},
 		groups: []GroupDescriptor{{BlockBitmapBlock: 1}},
 	}
 

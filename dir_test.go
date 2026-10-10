@@ -142,11 +142,11 @@ func TestWalkDirDerivesIsDirectoryFromInode(t *testing.T) {
 	sub = append(sub, dirent(nestedDeep, uint16(testBlockSize-24), 0, "deep.txt")...)
 	writeTestBlock(img, nestedSubBlock, sub)
 
-	writeTestInode(img, RootInode, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, RootInode, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{nestedRootBlock}, 0, 0, 0))
-	writeTestInode(img, nestedSub, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, nestedSub, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{nestedSubBlock}, 0, 0, 0))
-	writeTestInode(img, nestedDeep, inodeTypeRegular|0o644, 99, 0, nil)
+	writeTestInode(img, nestedDeep, ModeRegular|0o644, 99, 0, nil)
 
 	fs := openFixture(t, img, Options{})
 
@@ -189,10 +189,10 @@ func TestWalkDirStopsAtCycle(t *testing.T) {
 
 	// Replace sub's tail record with one pointing back at the root.
 	var sub []byte
-	sub = append(sub, dirent(nestedSub, 12, extDirentTypeDirectory, ".")...)
-	sub = append(sub, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
+	sub = append(sub, dirent(nestedSub, 12, FileTypeDir, ".")...)
+	sub = append(sub, dirent(RootInode, 12, FileTypeDir, "..")...)
 	sub = append(sub, dirent(nestedDeep, 20, 1, "deep.txt")...)
-	sub = append(sub, dirent(RootInode, uint16(testBlockSize-44), extDirentTypeDirectory, "loop")...)
+	sub = append(sub, dirent(RootInode, uint16(testBlockSize-44), FileTypeDir, "loop")...)
 	writeTestBlock(img, nestedSubBlock, sub)
 
 	fs := openFixture(t, img, Options{})
@@ -269,8 +269,8 @@ func TestStampParentIsAppliedThroughParseError(t *testing.T) {
 	img := buildTestImage(t, defaultSBConfig())
 
 	var dir []byte
-	dir = append(dir, dirent(RootInode, 12, extDirentTypeDirectory, ".")...)
-	dir = append(dir, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
+	dir = append(dir, dirent(RootInode, 12, FileTypeDir, ".")...)
+	dir = append(dir, dirent(RootInode, 12, FileTypeDir, "..")...)
 	dir = append(dir, dirent(nestedNotes, 20, 1, "notes.txt")...)
 	// A record claiming a length that overruns the block.
 	bad := make([]byte, 12)
@@ -282,7 +282,7 @@ func TestStampParentIsAppliedThroughParseError(t *testing.T) {
 	dir = append(dir, bad...)
 	writeTestBlock(img, nestedRootBlock, dir)
 
-	writeTestInode(img, RootInode, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, RootInode, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{nestedRootBlock}, 0, 0, 0))
 
 	fs := openFixture(t, img, Options{})
@@ -356,10 +356,10 @@ func TestWalkDirWithInodeReportsUnreadableInodeAsZero(t *testing.T) {
 	// stays valid; the inode behind it cannot be read.
 	const beyondTheFilesystem = 60000
 	root := make([]byte, 0, testBlockSize)
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, ".")...)
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, ".")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, "..")...)
 	root = append(root, dirent(beyondTheFilesystem, 20, 1, "notes.txt")...)
-	root = append(root, dirent(nestedSub, uint16(testBlockSize-44), extDirentTypeDirectory, "sub")...)
+	root = append(root, dirent(nestedSub, uint16(testBlockSize-44), FileTypeDir, "sub")...)
 	writeTestBlock(img, nestedRootBlock, root)
 
 	fs := openFixture(t, img, Options{})
@@ -441,8 +441,8 @@ func TestLookupPathRootIsADirectory(t *testing.T) {
 	if !root.IsDirectory {
 		t.Error("LookupPath(\"/\") reports the root as not a directory")
 	}
-	if root.FileType != extDirentTypeDirectory {
-		t.Errorf("FileType = %d, want %d", root.FileType, extDirentTypeDirectory)
+	if root.FileType != FileTypeDir {
+		t.Errorf("FileType = %d, want %d", root.FileType, FileTypeDir)
 	}
 	if root.Inode != RootInode || root.ParentInode != RootInode {
 		t.Errorf("root Inode/ParentInode = %d/%d, want %d/%d",

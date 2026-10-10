@@ -17,14 +17,14 @@ func buildInodeWithXAttrs(t testing.TB, mode uint16, size uint32, flags uint32, 
 	const inodeSize = 256
 	raw := make([]byte, inodeSize)
 
-	binary.LittleEndian.PutUint16(raw[inodeOffMode:], mode)
-	binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], size)
-	binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
-	binary.LittleEndian.PutUint32(raw[inodeOffFlags:], flags)
-	binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
-	copy(raw[inodeOffBlockRaw:inodeOffBlockRaw+60], iblock)
+	binary.LittleEndian.PutUint16(raw[InodeOffMode:], mode)
+	binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], size)
+	binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
+	binary.LittleEndian.PutUint32(raw[InodeOffFlags:], flags)
+	binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
+	copy(raw[InodeOffBlockRaw:InodeOffBlockRaw+60], iblock)
 
-	xstart := inodeBaseSize + 32
+	xstart := GoodOldInodeSize + 32
 	binary.LittleEndian.PutUint32(raw[xstart:], xattrInodeMagic)
 
 	base := xstart + 4
@@ -56,7 +56,7 @@ func buildInodeWithXAttrs(t testing.TB, mode uint16, size uint32, flags uint32, 
 // ---------------------------------------------------------------------------
 
 func TestParseInodeXAttrs(t *testing.T) {
-	raw := buildInodeWithXAttrs(t, inodeTypeRegular|0o644, 6, 0, nil, []inodeXAttr{
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, 6, 0, nil, []inodeXAttr{
 		{index: xattrNamespaceSecurity, name: "selinux", value: []byte("system_u:object_r:etc_t:s0\n")},
 		{index: xattrNamespaceUser, name: "comment", value: []byte("hello-attr")},
 	})
@@ -80,7 +80,7 @@ func TestParseInodeXAttrsTerminatorIgnoresTrailingValueBytes(t *testing.T) {
 	// The entry list ends at the first entry whose leading 32 bits are zero.
 	// Requiring the whole header to be zero fails here, because the bytes just
 	// past the terminator are the tail of a packed value and are not zero.
-	raw := buildInodeWithXAttrs(t, inodeTypeRegular|0o644, 0, 0, nil, []inodeXAttr{
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, 0, 0, nil, []inodeXAttr{
 		{index: xattrNamespaceUser, name: "comment", value: []byte("hello-attr")},
 	})
 
@@ -95,7 +95,7 @@ func TestParseInodeXAttrsTerminatorIgnoresTrailingValueBytes(t *testing.T) {
 
 func TestParseInodeXAttrsAbsentWithoutMagic(t *testing.T) {
 	raw := make([]byte, 256)
-	binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+	binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 
 	attrs, err := parseInodeXAttrs(raw, 32)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestParseInodeXAttrsAbsentWithoutMagic(t *testing.T) {
 func TestGetInlineXAttrsSkipsInlineDataAttribute(t *testing.T) {
 	// system.data carries the inline-data overflow. It is storage, not a
 	// user-visible attribute, and listing it would be misleading.
-	fs := &FS{sb: Superblock{FeatureCompat: featureCompatExtAttr}}
+	fs := &FS{sb: Superblock{FeatureCompat: CompatExtAttr}}
 
 	attrs := []inodeXAttr{
 		{index: xattrIndexSystem, name: inlineDataAttrName, value: []byte("overflow")},
@@ -131,8 +131,8 @@ func TestGetInlineXAttrsSkipsInlineDataAttribute(t *testing.T) {
 
 func TestInlineDataFitsInBlockArea(t *testing.T) {
 	content := []byte("tiny inline content")
-	raw := buildInodeWithXAttrs(t, inodeTypeRegular|0o644, uint32(len(content)),
-		inodeFlagInlineData, content, nil)
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, uint32(len(content)),
+		InodeFlagInlineData, content, nil)
 
 	inode := parseInode(raw, 14)
 	if !inode.HasInline {
@@ -156,8 +156,8 @@ func TestInlineDataOverflowsIntoSystemData(t *testing.T) {
 	tail := []byte("BBBBBBBBBB")
 	full := append(append([]byte{}, head...), tail...)
 
-	raw := buildInodeWithXAttrs(t, inodeTypeRegular|0o644, uint32(len(full)),
-		inodeFlagInlineData, head, []inodeXAttr{
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, uint32(len(full)),
+		InodeFlagInlineData, head, []inodeXAttr{
 			{index: xattrIndexSystem, name: inlineDataAttrName, value: tail},
 		})
 
@@ -176,7 +176,7 @@ func TestInlineDataOverflowsIntoSystemData(t *testing.T) {
 func TestInlineDataTruncatesToSize(t *testing.T) {
 	// The block area is always 60 bytes on disk; only Size says how much of it
 	// is real.
-	raw := buildInodeWithXAttrs(t, inodeTypeRegular|0o644, 4, inodeFlagInlineData,
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, 4, InodeFlagInlineData,
 		[]byte("abcdefghij"), nil)
 
 	inode := parseInode(raw, 14)
@@ -204,7 +204,7 @@ func TestInlineDirectoryEntries(t *testing.T) {
 	data = append(data, dirent(16, 20, 1, "nested.txt")...)
 
 	fs := &FS{sb: Superblock{
-		FeatureIncompat: featureIncompatFileType,
+		FeatureIncompat: IncompatFiletype,
 		BlockSize:       1024,
 	}}
 	inode := Inode{Number: 15, IsDirectory: true, HasInline: true}
@@ -237,8 +237,8 @@ func TestInlineDirectoryListedThroughListDir(t *testing.T) {
 	inline = binary.LittleEndian.AppendUint32(inline, RootInode)
 	inline = append(inline, dirent(41, 20, 1, "nested.txt")...)
 
-	writeTestInode(img, 40, inodeTypeDir|0o755, uint32(len(inline)), inodeFlagInlineData, inline)
-	writeTestInode(img, 41, inodeTypeRegular|0o644, 0, 0, nil)
+	writeTestInode(img, 40, ModeDir|0o755, uint32(len(inline)), InodeFlagInlineData, inline)
+	writeTestInode(img, 41, ModeRegular|0o644, 0, 0, nil)
 
 	fs := openFixture(t, img, Options{})
 
@@ -261,7 +261,7 @@ func TestInlineDirectoryListedThroughListDir(t *testing.T) {
 
 func TestInlineInodeReportsInlineExtent(t *testing.T) {
 	img := buildTestImage(t, defaultSBConfig())
-	writeTestInode(img, 40, inodeTypeRegular|0o644, 10, inodeFlagInlineData, []byte("0123456789"))
+	writeTestInode(img, 40, ModeRegular|0o644, 10, InodeFlagInlineData, []byte("0123456789"))
 
 	fs := openFixture(t, img, Options{})
 
@@ -286,8 +286,8 @@ func TestInlineInodeReportsInlineExtent(t *testing.T) {
 func TestReadFileReturnsInlineContent(t *testing.T) {
 	img := buildTestImage(t, defaultSBConfig())
 	content := "inline file body"
-	writeTestInode(img, 40, inodeTypeRegular|0o644, uint32(len(content)),
-		inodeFlagInlineData, []byte(content))
+	writeTestInode(img, 40, ModeRegular|0o644, uint32(len(content)),
+		InodeFlagInlineData, []byte(content))
 
 	fs := openFixture(t, img, Options{})
 

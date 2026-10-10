@@ -371,20 +371,20 @@ func inodeDeleted(inode Inode) bool {
 }
 
 func inodeTypeName(mode uint16) string {
-	switch mode & inodeModeTypeMask {
-	case inodeTypeDir:
+	switch mode & ModeTypeMask {
+	case ModeDir:
 		return "directory"
-	case inodeTypeRegular:
+	case ModeRegular:
 		return "file"
-	case inodeTypeSymlink:
+	case ModeSymlink:
 		return "symlink"
-	case inodeTypeChar:
+	case ModeChar:
 		return "char_device"
-	case inodeTypeBlock:
+	case ModeBlock:
 		return "block_device"
-	case inodeTypeFIFO:
+	case ModeFIFO:
 		return "fifo"
-	case inodeTypeSocket:
+	case ModeSocket:
 		return "socket"
 	default:
 		return "unknown"

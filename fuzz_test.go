@@ -87,6 +87,22 @@ func FuzzOpen(f *testing.F) {
 			}
 		})
 		timed("PathFor", func() { _, _ = fs.PathFor(RootInode) })
+
+		// Strict adds its own reads - tree block tails, directory tails, every
+		// named inode - and must hold to the same budget.
+		sfs, err := OpenWithOptions(bytes.NewReader(img), Options{Strict: true, Permissive: true})
+		if err != nil {
+			return
+		}
+		defer sfs.Close()
+		timed("Strict WalkDirWithInode", func() {
+			_ = sfs.WalkDirWithInode(RootInode, func(_ string, _ DirEntry, inode Inode) error {
+				if inode.IsRegular {
+					_, _ = sfs.ReadFile(inode.Number)
+				}
+				return nil
+			})
+		})
 	})
 }
 
@@ -103,18 +119,46 @@ func FuzzParseExtentTree(f *testing.F) {
 		})
 		// A self-referencing tree must terminate rather than exhaust the stack.
 		_, _ = fs.parseExtentTree(root)
+
+		// So must the strict walk, which also checks each block's tail.
+		fs.opts.Strict = true
+		fs.sb.FeatureROCompat = ROCompatMetadataCsum
+		inode := Inode{Number: 12, Generation: 7}
+		copy(inode.BlockRaw[:], root)
+		_, _, _ = fs.parseInodeExtentTree(inode)
+	})
+}
+
+// FuzzTimeCodec checks that every timestamp an inode can hold survives a
+// decode and re-encode unchanged, so a writer using EncodeTime reproduces what
+// a reader saw.
+func FuzzTimeCodec(f *testing.F) {
+	f.Add(uint32(0x80000000), uint32(1))
+	f.Add(uint32(0x7FFFFFFF), uint32(3|999999999<<2))
+	f.Add(uint32(0), uint32(0))
+
+	f.Fuzz(func(t *testing.T, sec, extra uint32) {
+		if extra>>2 >= 1e9 {
+			return // not a nanosecond count the kernel writes
+		}
+		at := DecodeTime(sec, extra)
+		gs, ge := EncodeTime(at)
+		if gs != sec || ge != extra {
+			t.Fatalf("(0x%08x, 0x%08x) decodes as %s, re-encodes as (0x%08x, 0x%08x)",
+				sec, extra, at, gs, ge)
+		}
 	})
 }
 
 func FuzzParseDirEntries(f *testing.F) {
-	f.Add(dirent(2, 12, extDirentTypeDirectory, "."))
+	f.Add(dirent(2, 12, FileTypeDir, "."))
 	f.Add(damagedDirData())
 	f.Add(make([]byte, 64))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		for _, permissive := range []bool{false, true} {
 			fs := &FS{
-				sb:   Superblock{FeatureIncompat: featureIncompatFileType, BlockSize: 1024},
+				sb:   Superblock{FeatureIncompat: IncompatFiletype, BlockSize: 1024},
 				opts: Options{Permissive: permissive},
 			}
 			entries, _ := fs.parseDirEntries(data)
@@ -151,15 +195,15 @@ func FuzzParseXAttrBlock(f *testing.F) {
 
 func FuzzParseInode(f *testing.F) {
 	f.Add(rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 	}))
 	f.Add(make([]byte, 128))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		// parseInode indexes fixed offsets; anything shorter than the base inode
 		// is the caller's responsibility, so mirror that guard here.
-		if len(raw) < inodeBaseSize {
+		if len(raw) < GoodOldInodeSize {
 			return
 		}
 		inode := parseInode(raw, 12)

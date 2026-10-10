@@ -129,7 +129,7 @@ func (fs *FS) scanDirBlockSlack(dirInode uint32, block []byte, blockOffset int64
 		}
 
 		nameLen := int(block[off+6])
-		if (fs.sb.FeatureIncompat & featureIncompatFileType) == 0 {
+		if (fs.sb.FeatureIncompat & IncompatFiletype) == 0 {
 			nameLen = int(le16(block, off+6))
 		}
 
@@ -178,7 +178,7 @@ func (fs *FS) recoverSlackRecord(dirInode uint32, block []byte, off, limit int, 
 	recLen := int(le16(block, off+4))
 	nameLen := int(block[off+6])
 	fileType := block[off+7]
-	if (fs.sb.FeatureIncompat & featureIncompatFileType) == 0 {
+	if (fs.sb.FeatureIncompat & IncompatFiletype) == 0 {
 		nameLen = int(le16(block, off+6))
 		fileType = 0
 	}

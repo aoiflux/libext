@@ -33,16 +33,16 @@ func TestParseInodeDecodesNanoseconds(t *testing.T) {
 	)
 
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffAtime:], sec)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], sec)
-		binary.LittleEndian.PutUint32(raw[inodeOffCtime:], sec)
-		binary.LittleEndian.PutUint32(raw[inodeOffCrtime:], sec)
-		binary.LittleEndian.PutUint32(raw[inodeOffAtimeExtra:], encodeExtra(0, nsec))
-		binary.LittleEndian.PutUint32(raw[inodeOffMtimeExtra:], encodeExtra(0, nsec))
-		binary.LittleEndian.PutUint32(raw[inodeOffCtimeExtra:], encodeExtra(0, nsec))
-		binary.LittleEndian.PutUint32(raw[inodeOffCrtimeExtra:], encodeExtra(0, nsec))
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffAtime:], sec)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], sec)
+		binary.LittleEndian.PutUint32(raw[InodeOffCtime:], sec)
+		binary.LittleEndian.PutUint32(raw[InodeOffCrtime:], sec)
+		binary.LittleEndian.PutUint32(raw[InodeOffAtimeExtra:], encodeExtra(0, nsec))
+		binary.LittleEndian.PutUint32(raw[InodeOffMtimeExtra:], encodeExtra(0, nsec))
+		binary.LittleEndian.PutUint32(raw[InodeOffCtimeExtra:], encodeExtra(0, nsec))
+		binary.LittleEndian.PutUint32(raw[InodeOffCrtimeExtra:], encodeExtra(0, nsec))
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 	})
 
 	inode := parseInode(raw, 13)
@@ -80,13 +80,15 @@ func TestParseInodeDecodesPost2038Dates(t *testing.T) {
 	const secBits = 0x80000000 // would be negative if read as int32
 
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], secBits)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtimeExtra:], encodeExtra(1, 0))
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], secBits)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtimeExtra:], encodeExtra(1, 0))
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 	})
 
+	// The kernel adds the epoch to the *signed* base: -2^31 + 2^32 = 2^31,
+	// which is 2038-01-19T03:14:08Z, the first second past the int32 range.
 	got := parseInode(raw, 1).Mtime
-	want := int64(secBits) | (int64(1) << 32)
+	want := int64(1) << 31
 
 	if got.Unix() != want {
 		t.Errorf("mtime = %d (%s), want %d (%s)",
@@ -103,9 +105,9 @@ func TestParseInodeWithoutEpochBitsKeepsSignedSeconds(t *testing.T) {
 	const secBits = 0xFFFFFFFF // -1: one second before the epoch
 
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], secBits)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtimeExtra:], encodeExtra(0, 0))
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], secBits)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtimeExtra:], encodeExtra(0, 0))
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 	})
 
 	if got := parseInode(raw, 1).Mtime; got.Unix() != -1 {
@@ -117,7 +119,7 @@ func TestParseInodeSmallInodeHasNoCreationTime(t *testing.T) {
 	// A 128-byte ext2 inode has no room for crtime; reading past the fixed part
 	// would decode neighbouring inodes' bytes as a timestamp.
 	raw := rawInode(128, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], 0x69e58838)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], 0x69e58838)
 	})
 
 	inode := parseInode(raw, 1)
@@ -136,10 +138,10 @@ func TestParseInodeExtraISizeGatesTheExtraFields(t *testing.T) {
 	// The inode is 256 bytes, but i_extra_isize says only 4 of them are in use,
 	// so crtime is not present even though the space physically exists.
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 4)
-		binary.LittleEndian.PutUint32(raw[inodeOffCrtime:], 0x69e58838)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], 0x69e58838)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtimeExtra:], encodeExtra(0, 500))
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 4)
+		binary.LittleEndian.PutUint32(raw[InodeOffCrtime:], 0x69e58838)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], 0x69e58838)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtimeExtra:], encodeExtra(0, 500))
 	})
 
 	inode := parseInode(raw, 1)
@@ -154,8 +156,8 @@ func TestParseInodeExtraISizeGatesTheExtraFields(t *testing.T) {
 func TestParseInodeDeletionTimeHasNoExtraWord(t *testing.T) {
 	// i_dtime is whole seconds even on ext4: there is no i_dtime_extra.
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffDtime:], 0x69e58838)
-		binary.LittleEndian.PutUint16(raw[inodeOffExtraISize:], 32)
+		binary.LittleEndian.PutUint32(raw[InodeOffDtime:], 0x69e58838)
+		binary.LittleEndian.PutUint16(raw[InodeOffExtraISize:], 32)
 	})
 
 	dtime := parseInode(raw, 1).Dtime
@@ -175,10 +177,10 @@ func TestParseInodeWidensBlocksAndFileACL(t *testing.T) {
 	// The high halves live in osd2 and were previously dropped, which put xattr
 	// blocks beyond the 32-bit boundary out of reach on large volumes.
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffBlocksLo:], 0x11223344)
-		binary.LittleEndian.PutUint16(raw[inodeOffBlocksHi:], 0x0055)
-		binary.LittleEndian.PutUint32(raw[inodeOffFileACLLo:], 0xAABBCCDD)
-		binary.LittleEndian.PutUint16(raw[inodeOffFileACLHi:], 0x0066)
+		binary.LittleEndian.PutUint32(raw[InodeOffBlocksLo:], 0x11223344)
+		binary.LittleEndian.PutUint16(raw[InodeOffBlocksHi:], 0x0055)
+		binary.LittleEndian.PutUint32(raw[InodeOffFileACLLo:], 0xAABBCCDD)
+		binary.LittleEndian.PutUint16(raw[InodeOffFileACLHi:], 0x0066)
 	})
 
 	inode := parseInode(raw, 1)
@@ -194,9 +196,9 @@ func TestParseInodeDirectorySizeIgnoresSizeHigh(t *testing.T) {
 	// For directories on ext2/ext3 the field at 0x6C is i_dir_acl, not the high
 	// word of the size. Folding it in produces absurd directory sizes.
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeDir|0o755)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 4096)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeHi:], 0xDEADBEEF) // i_dir_acl
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeDir|0o755)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 4096)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeHi:], 0xDEADBEEF) // i_dir_acl
 	})
 
 	if got := parseInode(raw, 2).Size; got != 4096 {
@@ -204,8 +206,8 @@ func TestParseInodeDirectorySizeIgnoresSizeHigh(t *testing.T) {
 	}
 
 	// A regular file with the same bytes does use the high word.
-	raw[inodeOffMode] = byte(inodeTypeRegular & 0xFF)
-	binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
+	raw[InodeOffMode] = byte(ModeRegular & 0xFF)
+	binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
 	if got := parseInode(raw, 2).Size; got != (0xDEADBEEF<<32)|4096 {
 		t.Errorf("regular file Size = %d, want the widened value", got)
 	}
@@ -213,7 +215,7 @@ func TestParseInodeDirectorySizeIgnoresSizeHigh(t *testing.T) {
 
 func TestParseInodeFlags(t *testing.T) {
 	raw := rawInode(256, func(raw []byte) {
-		binary.LittleEndian.PutUint32(raw[inodeOffFlags:], inodeFlagExtents|inodeFlagInlineData|inodeFlagHugeFile)
+		binary.LittleEndian.PutUint32(raw[InodeOffFlags:], InodeFlagExtents|InodeFlagInlineData|InodeFlagHugeFile)
 	})
 
 	inode := parseInode(raw, 1)
@@ -231,18 +233,18 @@ func TestInodeDeleted(t *testing.T) {
 		dtime uint32
 		want  bool
 	}{
-		{"live file", inodeTypeRegular | 0o644, 1, 0, false},
-		{"deletion time set", inodeTypeRegular | 0o644, 1, 0x69e58838, true},
-		{"no links remaining", inodeTypeRegular | 0o644, 0, 0, true},
+		{"live file", ModeRegular | 0o644, 1, 0, false},
+		{"deletion time set", ModeRegular | 0o644, 1, 0x69e58838, true},
+		{"no links remaining", ModeRegular | 0o644, 0, 0, true},
 		{"never allocated", 0, 0, 0, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			raw := rawInode(256, func(raw []byte) {
-				binary.LittleEndian.PutUint16(raw[inodeOffMode:], tt.mode)
-				binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], tt.links)
-				binary.LittleEndian.PutUint32(raw[inodeOffDtime:], tt.dtime)
+				binary.LittleEndian.PutUint16(raw[InodeOffMode:], tt.mode)
+				binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], tt.links)
+				binary.LittleEndian.PutUint32(raw[InodeOffDtime:], tt.dtime)
 			})
 			if got := parseInode(raw, 30).Deleted(); got != tt.want {
 				t.Errorf("Deleted() = %v, want %v", got, tt.want)
@@ -263,8 +265,8 @@ func buildDirFixture(t testing.TB) []byte {
 
 	const dirBlock = 200
 	var dir []byte
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, ".")...)
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, "..")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, ".")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, "..")...)
 	// 8-byte header plus a 9-character name, padded to a 4-byte boundary.
 	dir = append(dir, dirent(40, 20, 1, "notes.txt")...)
 	// Final record spans the rest of the block, as ext4 lays it out.
@@ -272,27 +274,27 @@ func buildDirFixture(t testing.TB) []byte {
 	dir = append(dir, tail...)
 
 	writeTestBlock(img, dirBlock, dir)
-	writeTestInode(img, 2, inodeTypeDir|0o755, testBlockSize, 0, classicRoot([]uint32{dirBlock}, 0, 0, 0))
+	writeTestInode(img, 2, ModeDir|0o755, testBlockSize, 0, classicRoot([]uint32{dirBlock}, 0, 0, 0))
 
 	// notes.txt, with a full timestamp set.
 	notes := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 1234)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], 0x69e58838)
-		binary.LittleEndian.PutUint32(raw[inodeOffAtime:], 0x69e58839)
-		binary.LittleEndian.PutUint32(raw[inodeOffCtime:], 0x69e5883A)
-		binary.LittleEndian.PutUint16(raw[inodeOffUIDLo:], 1000)
-		binary.LittleEndian.PutUint16(raw[inodeOffGIDLo:], 1001)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 1234)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], 0x69e58838)
+		binary.LittleEndian.PutUint32(raw[InodeOffAtime:], 0x69e58839)
+		binary.LittleEndian.PutUint32(raw[InodeOffCtime:], 0x69e5883A)
+		binary.LittleEndian.PutUint16(raw[InodeOffUIDLo:], 1000)
+		binary.LittleEndian.PutUint16(raw[InodeOffGIDLo:], 1001)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+39*testInodeSize:], notes)
 
 	// image.bin, unlinked: a deletion time and no remaining links.
 	deleted := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 4096)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 0)
-		binary.LittleEndian.PutUint32(raw[inodeOffDtime:], 0x69e58900)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 4096)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 0)
+		binary.LittleEndian.PutUint32(raw[InodeOffDtime:], 0x69e58900)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+40*testInodeSize:], deleted)
 

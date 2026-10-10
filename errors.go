@@ -11,4 +11,8 @@ var (
 	ErrNotRegularFile    = errors.New("inode is not a regular file")
 	ErrNotSymlink        = errors.New("inode is not a symlink")
 	ErrPathNotFound      = errors.New("path not found")
+
+	// ErrStrict is wrapped by every StrictError: the image is readable but not
+	// well formed, and Options.Strict refused it.
+	ErrStrict = errors.New("ext strict check failed")
 )

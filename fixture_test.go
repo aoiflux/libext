@@ -25,16 +25,16 @@ func TestFeatureCompatibility(t *testing.T) {
 		},
 		{
 			name:      "EXT3 with journal",
-			compat:    featureCompatHasJournal,
+			compat:    CompatHasJournal,
 			incompat:  0,
 			rocompat:  0,
 			shouldErr: false,
 		},
 		{
 			name:      "EXT4 with supported features",
-			compat:    featureCompatDirIndex,
-			incompat:  featureIncompatExtents | featureIncompatFileType,
-			rocompat:  featureRoCompatMetadataCS,
+			compat:    CompatDirIndex,
+			incompat:  IncompatExtents | IncompatFiletype,
+			rocompat:  ROCompatMetadataCsum,
 			shouldErr: false,
 		},
 		{
@@ -155,7 +155,7 @@ func TestSuperblockMagicValidation(t *testing.T) {
 			binary.LittleEndian.PutUint16(sb[56:58], tt.magic)
 
 			parsedMagic := binary.LittleEndian.Uint16(sb[56:58])
-			isValid := parsedMagic == extMagic
+			isValid := parsedMagic == Magic
 
 			if isValid != tt.isValid {
 				t.Errorf("Expected valid=%v for magic 0x%04X, got %v", tt.isValid, tt.magic, isValid)
@@ -173,9 +173,9 @@ func TestRevisionLevelDetection(t *testing.T) {
 		name         string
 	}{
 		{0, 0, FSKindExt2, "EXT2 (revision 0)"},
-		{0, featureIncompatFileType, FSKindExt2, "EXT2 with file type"},
+		{0, IncompatFiletype, FSKindExt2, "EXT2 with file type"},
 		{1, 0, FSKindExt3, "EXT3 (revision 1, no extents)"},
-		{1, featureIncompatExtents, FSKindExt4, "EXT4 (revision 1 with extents)"},
+		{1, IncompatExtents, FSKindExt4, "EXT4 (revision 1 with extents)"},
 	}
 
 	for _, tt := range tests {
@@ -187,8 +187,8 @@ func TestRevisionLevelDetection(t *testing.T) {
 
 			// Simulate kind detection logic
 			var kind FSKind
-			if (sb.FeatureIncompat&featureIncompatExtents) != 0 ||
-				(sb.FeatureIncompat&featureIncompat64Bit) != 0 {
+			if (sb.FeatureIncompat&IncompatExtents) != 0 ||
+				(sb.FeatureIncompat&Incompat64Bit) != 0 {
 				kind = FSKindExt4
 			} else if sb.RevisionLevel >= 1 {
 				kind = FSKindExt3
@@ -210,19 +210,19 @@ func TestMinimalSuperblockOpen(t *testing.T) {
 	sb := imageData[1024 : 1024+1024]
 
 	// Essential fields
-	binary.LittleEndian.PutUint32(sb[0:4], 256)        // inode count
-	binary.LittleEndian.PutUint32(sb[4:8], 1000)       // block count (low)
-	binary.LittleEndian.PutUint32(sb[8:12], 10)        // reserved blocks
-	binary.LittleEndian.PutUint32(sb[12:16], 500)      // free blocks
-	binary.LittleEndian.PutUint32(sb[16:20], 128)      // free inodes
-	binary.LittleEndian.PutUint32(sb[20:24], 1)        // first data block
-	binary.LittleEndian.PutUint32(sb[24:28], 2)        // log block size (4KB)
-	binary.LittleEndian.PutUint32(sb[32:36], 8192)     // blocks per group
-	binary.LittleEndian.PutUint32(sb[40:44], 256)      // inodes per group
-	binary.LittleEndian.PutUint16(sb[56:58], extMagic) // magic
-	binary.LittleEndian.PutUint16(sb[58:60], 1)        // state (clean)
-	binary.LittleEndian.PutUint32(sb[76:80], 0)        // revision level
-	binary.LittleEndian.PutUint16(sb[88:90], 128)      // inode size
+	binary.LittleEndian.PutUint32(sb[0:4], 256)     // inode count
+	binary.LittleEndian.PutUint32(sb[4:8], 1000)    // block count (low)
+	binary.LittleEndian.PutUint32(sb[8:12], 10)     // reserved blocks
+	binary.LittleEndian.PutUint32(sb[12:16], 500)   // free blocks
+	binary.LittleEndian.PutUint32(sb[16:20], 128)   // free inodes
+	binary.LittleEndian.PutUint32(sb[20:24], 1)     // first data block
+	binary.LittleEndian.PutUint32(sb[24:28], 2)     // log block size (4KB)
+	binary.LittleEndian.PutUint32(sb[32:36], 8192)  // blocks per group
+	binary.LittleEndian.PutUint32(sb[40:44], 256)   // inodes per group
+	binary.LittleEndian.PutUint16(sb[56:58], Magic) // magic
+	binary.LittleEndian.PutUint16(sb[58:60], 1)     // state (clean)
+	binary.LittleEndian.PutUint32(sb[76:80], 0)     // revision level
+	binary.LittleEndian.PutUint16(sb[88:90], 128)   // inode size
 
 	// Try to open - will fail on group descriptor read but that's expected
 	// This test verifies superblock parsing itself works
@@ -265,7 +265,7 @@ func TestFSKindDetection(t *testing.T) {
 			setupSB: func(sb *Superblock) {
 				sb.RevisionLevel = 1
 				sb.FeatureIncompat = 0
-				sb.FeatureCompat = featureCompatHasJournal
+				sb.FeatureCompat = CompatHasJournal
 			},
 			expectedKind: FSKindExt3,
 		},
@@ -273,7 +273,7 @@ func TestFSKindDetection(t *testing.T) {
 			name: "EXT4",
 			setupSB: func(sb *Superblock) {
 				sb.RevisionLevel = 1
-				sb.FeatureIncompat = featureIncompatExtents
+				sb.FeatureIncompat = IncompatExtents
 			},
 			expectedKind: FSKindExt4,
 		},
@@ -285,8 +285,8 @@ func TestFSKindDetection(t *testing.T) {
 			tt.setupSB(sb)
 
 			var detected FSKind
-			if (sb.FeatureIncompat&featureIncompatExtents) != 0 ||
-				(sb.FeatureIncompat&featureIncompat64Bit) != 0 {
+			if (sb.FeatureIncompat&IncompatExtents) != 0 ||
+				(sb.FeatureIncompat&Incompat64Bit) != 0 {
 				detected = FSKindExt4
 			} else if sb.RevisionLevel >= 1 {
 				detected = FSKindExt3

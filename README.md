@@ -106,7 +106,11 @@ Implemented or available now:
 - Symlink target reads
 - HTree/indexed directory detection and validation
 - ext4 metadata checksum verification for superblocks, group descriptors,
-  inodes, block bitmaps, and inode bitmaps
+  inodes, block bitmaps, and inode bitmaps; extent tree and directory block
+  tails under `Options.Strict`
+- Strict verification of well-formed images (`Options.Strict`)
+- Exported on-disk constants and pure checksum and timestamp codecs, for
+  programs that write ext4 and want to share one definition of the format
 - Extended attribute parsing
 - Journal status reporting and transaction enumeration
 - Journalled block and inode recovery, directly or through a `JournalIndex`
@@ -226,6 +230,68 @@ Feature, xattr, journal, and integrity helpers:
 - `(*FS).ValidateInodeIntegrity(inode *Inode) []CorruptionReport`
 - `(*FS).ValidateGroupDescriptorIntegrity(groupNum uint32, gd *GroupDescriptor) []CorruptionReport`
 
+Strict verification:
+
+- `Options.Strict bool`
+- `type StrictError struct { Check StrictCheck; Inode uint32; Block uint64; Detail string }`
+- `type StrictCheck string` with `StrictExtentTail`, `StrictExtentRange`,
+  `StrictDirTail`, `StrictDuplicateName`, `StrictHole`, `StrictUnwritten`,
+  `StrictShortMap`, `StrictUnlinked`, `StrictDeleted`, `StrictBlockMapped`
+
+`Strict` is for checking an image expected to be well formed, such as one your
+own program just wrote. It implies `VerifyChecksums`, and also checks the
+checksum tails of extent tree and directory blocks. It refuses:
+
+- holes, unwritten runs, and short block maps in data being read;
+- extents that run past the end of the filesystem;
+- duplicate names in a directory;
+- named inodes that are unlinked or deleted (checked during a walk);
+- regular files, directories and slow symlinks that use block pointers on a
+  filesystem with the extents feature. An ext3 volume converted to ext4
+  legitimately keeps such inodes, so Strict rejects it.
+
+Leaving `Strict` off changes nothing.
+
+On-disk constants and codecs:
+
+- Superblock: `Magic`, `SuperblockOffset`, `SuperblockSize`, and an `SbOff*`
+  offset for every field of `struct ext4_super_block`
+- Group descriptors: `GdOff*`, `GroupDescSizeMin`, `GroupDescSize64Bit`
+- Inodes: `InodeOff*`, `GoodOldInodeSize`, `RootInode`, `BadBlocksInode`,
+  `GoodOldFirstIno`, `NBlocks`, `BlockMapSize`, `InlineSymlinkMax`
+- Feature bits as `uint32`: `Compat*`, `Incompat*`, `ROCompat*`
+- `InodeFlag*` (`uint32`), `Mode*` (`uint16`), `FileType*` and
+  `DirTailFileType` (`uint8`)
+- Extents and directories: `ExtentMagic`, `ExtentHeaderSize`,
+  `ExtentEntrySize`, `ExtentInitMaxLen`, `ExtentTailSize`,
+  `DirEntryHeaderSize`, `MaxNameLen`, `DirTailSize`
+- Superblock values: `ChecksumTypeCRC32C`, `Hash*`, `FlagSignedHash`,
+  `FlagUnsignedHash`, `DefMountUserXattr`, `DefMountACL`, `UUIDLen`,
+  `VolumeNameLen`, `LastMountedLen`
+- `CRC32C(seed uint32, b []byte) uint32`
+- `MetadataSeed(uuid [16]byte, csumSeed uint32, hasCsumSeed bool) uint32`
+- `SuperblockChecksum(raw []byte) uint32`
+- `GroupDescChecksum(seed uint32, group uint32, raw []byte, descSize int) uint16`
+- `InodeChecksum(seed uint32, ino, gen uint32, raw []byte, inodeSize int) (lo uint16, hi uint16, hasHi bool)`
+- `BitmapChecksum(seed uint32, bitmap []byte) uint32`
+- `ExtentTailChecksum(seed, ino, gen uint32, block []byte) uint32`
+- `DirTailChecksum(seed, ino, gen uint32, block []byte) uint32`
+- `EncodeTime(t time.Time) (sec uint32, extra uint32)`
+- `DecodeTime(sec, extra uint32) time.Time`
+- `MinTime`, `MaxTime`
+- `HasSuperBackup(group uint32, sparseSuper, sparseSuper2 bool, backupBGs [2]uint32) bool`
+- `DirRecLen(nameLen int) int`
+
+Each codec follows the kernel function named in its doc comment. The tests check
+each one against an image written by e2fsprogs. None of them reads an image, so
+a program that writes ext4 can use the same code to stamp its structures that
+libext uses to verify them. libext itself stays read-only.
+
+`DecodeTime(0, 0)` returns 1970-01-01, as the kernel does. The `Inode` time
+fields instead report a zero `time.Time` when both on-disk words are zero,
+because an unset field is far more common than a file stamped at exactly the
+epoch.
+
 ### Naming journal-discovered inodes
 
 The journal reports what changed as block and inode numbers, never as paths.
@@ -321,6 +387,8 @@ main failure modes:
 - `ErrNotRegularFile`
 - `ErrNotSymlink`
 - `ErrPathNotFound`
+- `ErrStrict`, wrapped by every `*StrictError` that `Options.Strict` returns. A
+  failed checksum tail also matches `ErrChecksumMismatch`.
 
 Use `errors.Is` when you want to branch on a known failure:
 

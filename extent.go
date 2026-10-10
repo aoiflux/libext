@@ -1,6 +1,7 @@
 package libext
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -131,7 +132,7 @@ func (fs *FS) InodeExtents(inode Inode, opts ExtentOptions) ([]Extent, error) {
 	// A fast symlink has a size but no blocks: its target is stored in the
 	// block map itself. Normalizing an empty run list against that size would
 	// invent a sparse extent for data that is not on disk at all.
-	if isFastSymlink(inode) {
+	if fs.isFastSymlink(inode) {
 		return nil, nil
 	}
 
@@ -144,8 +145,33 @@ func (fs *FS) InodeExtents(inode Inode, opts ExtentOptions) ([]Extent, error) {
 
 // isFastSymlink reports whether the inode stores its link target inline in the
 // block pointer area rather than in a data block.
-func isFastSymlink(inode Inode) bool {
-	return inode.IsSymlink && inode.Size > 0 && inode.Size <= uint64(len(inode.BlockRaw))
+//
+// Size alone cannot decide it. The kernel stores a target inline only when
+// strlen+1 fits in i_block (fs/ext4/namei.c ext4_symlink), so a 60-byte target
+// already lives in a block, and its i_block holds that block's map. The rule is
+// the kernel's ext4_inode_is_fast_symlink: a link owning no blocks beyond its
+// external xattr block is fast. Size < 60 is kept as a second condition because
+// some tools leave i_blocks at zero; a target that long cannot be inline
+// whatever the block count says.
+func (fs *FS) isFastSymlink(inode Inode) bool {
+	if !inode.IsSymlink || inode.Size == 0 || inode.Size >= uint64(len(inode.BlockRaw)) {
+		return false
+	}
+	if inode.Flags&InodeFlagEAInode != 0 {
+		return true
+	}
+	if inode.HasInline {
+		return false
+	}
+	sectors := inode.Blocks512
+	if inode.HugeFile {
+		sectors *= uint64(fs.sb.BlockSize) / 512
+	}
+	var eaSectors uint64
+	if inode.FileACL != 0 {
+		eaSectors = uint64(fs.sb.BlockSize) / 512
+	}
+	return sectors <= eaSectors
 }
 
 // Extents returns the block map of the open file.
@@ -248,20 +274,23 @@ func (fs *FS) rawExtents(inode Inode, opts ExtentOptions) ([]Extent, []uint64, e
 	// Under BIGALLOC an extent counts clusters, not blocks; every physical
 	// offset derived here would be scaled wrongly. Open refuses such images
 	// unless Permissive is set, so this guards the permissive path.
-	if (fs.sb.FeatureROCompat & featureRoCompatBigalloc) != 0 {
+	if (fs.sb.FeatureROCompat & ROCompatBigalloc) != 0 {
 		return nil, nil, fmt.Errorf("%w: BIGALLOC addresses clusters, not blocks", ErrUnsupportedLayout)
 	}
 
-	if (inode.Flags & inodeFlagInlineData) != 0 {
+	if (inode.Flags & InodeFlagInlineData) != 0 {
 		return []Extent{{Flags: ExtentInline}}, nil, nil
 	}
 
-	if isFastSymlink(inode) {
+	if fs.isFastSymlink(inode) {
 		return nil, nil, nil
 	}
 
-	if inode.HasExtents || fs.kind == FSKindExt4 || (fs.sb.FeatureIncompat&featureIncompatExtents) != 0 {
-		recs, meta, err := fs.parseExtentTreeWithMeta(inode.BlockRaw[:])
+	if inode.HasExtents || fs.kind == FSKindExt4 || (fs.sb.FeatureIncompat&IncompatExtents) != 0 {
+		recs, meta, err := fs.parseInodeExtentTree(inode)
+		if errors.Is(err, ErrStrict) {
+			return nil, nil, err
+		}
 		if err == nil {
 			runs := make([]Extent, 0, len(recs))
 			for _, rec := range recs {

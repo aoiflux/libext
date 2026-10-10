@@ -3,50 +3,50 @@ package libext
 import "fmt"
 
 func (fs *FS) loadSuperblock() error {
-	buf := make([]byte, superblockSize)
-	if err := fs.readAt(superblockOffset, buf); err != nil {
+	buf := make([]byte, SuperblockSize)
+	if err := fs.readAt(SuperblockOffset, buf); err != nil {
 		return fmt.Errorf("read superblock: %w", err)
 	}
 
 	sb := Superblock{}
-	sb.InodesCount = le32(buf, sbOffInodesCount)
-	blocksLo := le32(buf, sbOffBlocksCountLo)
-	resBlocksLo := le32(buf, sbOffReservedBlocksLo)
-	freeBlocksLo := le32(buf, sbOffFreeBlocksLo)
-	sb.FreeInodes = le32(buf, sbOffFreeInodes)
-	sb.FirstDataBlock = le32(buf, sbOffFirstDataBlock)
-	sb.LogBlockSize = le32(buf, sbOffLogBlockSize)
+	sb.InodesCount = le32(buf, SbOffInodesCount)
+	blocksLo := le32(buf, SbOffBlocksCountLo)
+	resBlocksLo := le32(buf, SbOffReservedBlocksLo)
+	freeBlocksLo := le32(buf, SbOffFreeBlocksLo)
+	sb.FreeInodes = le32(buf, SbOffFreeInodes)
+	sb.FirstDataBlock = le32(buf, SbOffFirstDataBlock)
+	sb.LogBlockSize = le32(buf, SbOffLogBlockSize)
 	sb.BlockSize = 1024 << sb.LogBlockSize
-	sb.BlocksPerGroup = le32(buf, sbOffBlocksPerGroup)
-	sb.InodesPerGroup = le32(buf, sbOffInodesPerGroup)
-	sb.MountTime = unixTime(le32(buf, sbOffMountTime))
-	sb.WriteTime = unixTime(le32(buf, sbOffWriteTime))
-	sb.MountCount = le16(buf, sbOffMountCount)
-	sb.MaxMountCount = le16(buf, sbOffMaxMountCount)
-	sb.Magic = le16(buf, sbOffMagic)
-	sb.State = le16(buf, sbOffState)
-	sb.ErrorsBehavior = le16(buf, sbOffErrorsBehavior)
-	sb.RevisionLevel = le32(buf, sbOffRevisionLevel)
-	sb.CreatorOS = le32(buf, sbOffCreatorOS)
-	sb.FirstInode = le32(buf, sbOffFirstInode)
-	sb.InodeSize = le16(buf, sbOffInodeSize)
-	sb.FeatureCompat = le32(buf, sbOffFeatureCompat)
-	sb.FeatureIncompat = le32(buf, sbOffFeatureIncompat)
-	sb.FeatureROCompat = le32(buf, sbOffFeatureROCompat)
-	copy(sb.UUID[:], buf[sbOffUUID:sbOffUUID+sbUUIDLen])
-	sb.VolumeName = trimCString(buf[sbOffVolumeName : sbOffVolumeName+sbVolumeNameLen])
-	sb.LastMounted = trimCString(buf[sbOffLastMounted : sbOffLastMounted+sbLastMountedLen])
-	sb.JournalInode = le32(buf, sbOffJournalInode)
-	sb.JournalDevice = le32(buf, sbOffJournalDevice)
-	sb.LastOrphan = le32(buf, sbOffLastOrphan)
-	sb.DescSize = le16(buf, sbOffDescSize)
-	sb.ChecksumSeed = le32(buf, sbOffChecksumSeed)
+	sb.BlocksPerGroup = le32(buf, SbOffBlocksPerGroup)
+	sb.InodesPerGroup = le32(buf, SbOffInodesPerGroup)
+	sb.MountTime = unixTime(le32(buf, SbOffMountTime))
+	sb.WriteTime = unixTime(le32(buf, SbOffWriteTime))
+	sb.MountCount = le16(buf, SbOffMountCount)
+	sb.MaxMountCount = le16(buf, SbOffMaxMountCount)
+	sb.Magic = le16(buf, SbOffMagic)
+	sb.State = le16(buf, SbOffState)
+	sb.ErrorsBehavior = le16(buf, SbOffErrorsBehavior)
+	sb.RevisionLevel = le32(buf, SbOffRevisionLevel)
+	sb.CreatorOS = le32(buf, SbOffCreatorOS)
+	sb.FirstInode = le32(buf, SbOffFirstInode)
+	sb.InodeSize = le16(buf, SbOffInodeSize)
+	sb.FeatureCompat = le32(buf, SbOffFeatureCompat)
+	sb.FeatureIncompat = le32(buf, SbOffFeatureIncompat)
+	sb.FeatureROCompat = le32(buf, SbOffFeatureROCompat)
+	copy(sb.UUID[:], buf[SbOffUUID:SbOffUUID+UUIDLen])
+	sb.VolumeName = trimCString(buf[SbOffVolumeName : SbOffVolumeName+VolumeNameLen])
+	sb.LastMounted = trimCString(buf[SbOffLastMounted : SbOffLastMounted+LastMountedLen])
+	sb.JournalInode = le32(buf, SbOffJournalInode)
+	sb.JournalDevice = le32(buf, SbOffJournalDevice)
+	sb.LastOrphan = le32(buf, SbOffLastOrphan)
+	sb.DescSize = le16(buf, SbOffDescSize)
+	sb.ChecksumSeed = le32(buf, SbOffChecksumSeed)
 	// s_orphan_file_inum sits at 0x280, after the four *_hi time bytes and the
 	// encoding fields. Confirmed against a filesystem whose neighbouring
 	// s_overhead_clusters and s_checksum_seed both match dumpe2fs.
-	sb.OrphanFileInode = le32(buf, sbOffOrphanFileInode)
+	sb.OrphanFileInode = le32(buf, SbOffOrphanFileInode)
 
-	if sb.Magic != extMagic {
+	if sb.Magic != Magic {
 		return ErrInvalidSuperblock
 	}
 	if sb.BlockSize < 1024 || sb.BlockSize > 65536 || sb.BlockSize%1024 != 0 {
@@ -56,10 +56,10 @@ func (fs *FS) loadSuperblock() error {
 		return fmt.Errorf("%w: zero group geometry", ErrInvalidSuperblock)
 	}
 
-	blocksHi := le32(buf, sbOffBlocksCountHi)
-	resBlocksHi := le32(buf, sbOffReservedBlocksHi)
-	freeBlocksHi := le32(buf, sbOffFreeBlocksHi)
-	if (sb.FeatureIncompat&featureIncompat64Bit) != 0 || blocksHi != 0 {
+	blocksHi := le32(buf, SbOffBlocksCountHi)
+	resBlocksHi := le32(buf, SbOffReservedBlocksHi)
+	freeBlocksHi := le32(buf, SbOffFreeBlocksHi)
+	if (sb.FeatureIncompat&Incompat64Bit) != 0 || blocksHi != 0 {
 		sb.BlocksCount = (uint64(blocksHi) << 32) | uint64(blocksLo)
 		sb.ReservedBlocks = (uint64(resBlocksHi) << 32) | uint64(resBlocksLo)
 		sb.FreeBlocks = (uint64(freeBlocksHi) << 32) | uint64(freeBlocksLo)
@@ -148,12 +148,12 @@ func (fs *FS) loadSuperblock() error {
 }
 
 func detectFSKind(sb Superblock) FSKind {
-	if (sb.FeatureIncompat&featureIncompatExtents) != 0 ||
-		(sb.FeatureIncompat&featureIncompat64Bit) != 0 ||
-		(sb.FeatureROCompat&featureRoCompatMetadataCS) != 0 {
+	if (sb.FeatureIncompat&IncompatExtents) != 0 ||
+		(sb.FeatureIncompat&Incompat64Bit) != 0 ||
+		(sb.FeatureROCompat&ROCompatMetadataCsum) != 0 {
 		return FSKindExt4
 	}
-	if (sb.FeatureCompat & featureCompatHasJournal) != 0 {
+	if (sb.FeatureCompat & CompatHasJournal) != 0 {
 		return FSKindExt3
 	}
 	if sb.RevisionLevel == 0 {

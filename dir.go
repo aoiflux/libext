@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-const (
-	extDirentTypeDirectory = 2
-)
-
 func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 	inode, err := fs.ReadInode(inodeNum)
 	if err != nil {
@@ -32,9 +28,18 @@ func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 	// from this directory whether or not the tail of it decoded.
 	if inode.HasInline {
 		entries, err := fs.inlineDirEntries(inode, data)
+		if err == nil {
+			err = fs.strictCheckNames(inodeNum, entries)
+		}
 		return stampParent(entries, inodeNum), err
 	}
+	if err := fs.strictCheckDirBlocks(inode, data); err != nil {
+		return nil, err
+	}
 	entries, err := fs.parseDirEntries(data)
+	if err == nil {
+		err = fs.strictCheckNames(inodeNum, entries)
+	}
 	return stampParent(entries, inodeNum), err
 }
 
@@ -50,6 +55,14 @@ func stampParent(entries []DirEntry, parent uint32) []DirEntry {
 	return entries
 }
 
+// DirRecLen is the record length a directory entry with a name of nameLen
+// bytes needs: the 8-byte header plus the name, rounded up to the 4-byte
+// alignment every record keeps (EXT4_DIR_REC_LEN). The last record in a block
+// is then stretched to reach the end of the block, or the tail record.
+func DirRecLen(nameLen int) int {
+	return (DirEntryHeaderSize + nameLen + dirEntryAlign - 1) &^ (dirEntryAlign - 1)
+}
+
 // dirEntryAlign is the on-disk alignment of a directory record. It is the step
 // used to resynchronise after a damaged record.
 const dirEntryAlign = 4
@@ -62,7 +75,7 @@ const dirEntryAlign = 4
 // records that follow damage in the middle of a block.
 func (fs *FS) parseDirEntries(data []byte) ([]DirEntry, error) {
 	entries := make([]DirEntry, 0, 32)
-	hasFileType := (fs.sb.FeatureIncompat & featureIncompatFileType) != 0
+	hasFileType := (fs.sb.FeatureIncompat & IncompatFiletype) != 0
 
 	for off := 0; off+8 <= len(data); {
 		entry, recLen, err := parseDirEntryAt(data, off, hasFileType)
@@ -129,7 +142,7 @@ func parseDirEntryAt(data []byte, off int, hasFileType bool) (DirEntry, int, err
 		NameLen:     nameLen,
 		FileType:    fileType,
 		Name:        string(data[off+8 : off+8+int(nameLen)]),
-		IsDirectory: hasFileType && fileType == extDirentTypeDirectory,
+		IsDirectory: hasFileType && fileType == FileTypeDir,
 	}, recLen, nil
 }
 
@@ -395,6 +408,16 @@ func (w *dirWalk) descend(inodeNum uint32, curPath string, depth int) error {
 		// cost. A read that fails still yields the callback the record's name,
 		// which is real evidence whether or not the inode behind it survives.
 		child, cerr := w.fs.ReadInode(e.Inode)
+		if w.fs.opts.Strict {
+			// Strict is for verifying an image, so a name whose inode cannot be
+			// read, or is not live, fails the walk rather than being reported.
+			if cerr != nil {
+				return fmt.Errorf("%s: %w", nextPath, cerr)
+			}
+			if err := w.fs.strictCheckNamed(nextPath, child); err != nil {
+				return err
+			}
+		}
 		if cerr != nil {
 			// Zeroed explicitly rather than trusted to be zero, because the
 			// callback contract is that Number == 0 marks an unread inode and a

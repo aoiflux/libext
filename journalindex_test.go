@@ -24,15 +24,15 @@ func buildInodeVersionFixture(t testing.TB) []byte {
 
 	priorBlock := make([]byte, testBlockSize)
 	prior := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 9999)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
-		copy(raw[inodeOffBlockRaw:], classicRoot([]uint32{100, 101}, 0, 0, 0))
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 9999)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
+		copy(raw[InodeOffBlockRaw:], classicRoot([]uint32{100, 101}, 0, 0, 0))
 	})
 	copy(priorBlock[2*testInodeSize:], prior)
 
 	img := buildJournalFixture(t, priorBlock, testInodeTableBlock)
-	writeTestInode(img, 3, inodeTypeRegular|0o644, 0, 0, nil)
+	writeTestInode(img, 3, ModeRegular|0o644, 0, 0, nil)
 	return img
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 func TestVerifyInodeChecksumLow16(t *testing.T) {
-	fs := &FS{sb: Superblock{FeatureROCompat: featureRoCompatMetadataCS}}
+	fs := &FS{sb: Superblock{FeatureROCompat: ROCompatMetadataCsum}}
 	copy(fs.sb.UUID[:], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
 
 	inodeNum := uint32(42)
@@ -32,7 +32,7 @@ func TestVerifyInodeChecksumLow16(t *testing.T) {
 }
 
 func TestVerifyInodeChecksumHigh32(t *testing.T) {
-	fs := &FS{sb: Superblock{FeatureROCompat: featureRoCompatMetadataCS}}
+	fs := &FS{sb: Superblock{FeatureROCompat: ROCompatMetadataCsum}}
 	copy(fs.sb.UUID[:], []byte{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1})
 
 	inodeNum := uint32(1337)
@@ -91,8 +91,8 @@ func inodeChecksumForTest(uuid [16]byte, inodeNum uint32, raw []byte, hasHi bool
 	gen := make([]byte, 4)
 	binary.LittleEndian.PutUint32(gen, binary.LittleEndian.Uint32(raw[0x64:0x68]))
 
-	seed := extCRC32C(crc32cInit, uuid[:])
-	crc := extCRC32C(seed, inum)
-	crc = extCRC32C(crc, gen)
-	return extCRC32C(crc, buf)
+	seed := CRC32C(crc32cInit, uuid[:])
+	crc := CRC32C(seed, inum)
+	crc = CRC32C(crc, gen)
+	return CRC32C(crc, buf)
 }

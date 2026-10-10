@@ -26,9 +26,9 @@ func TestExtCRC32COmitsFinalComplement(t *testing.T) {
 		t.Fatalf("CRC-32C table is wrong: Checksum = 0x%08x, want 0x%08x", got, standardCheckValue)
 	}
 
-	got := extCRC32C(crc32cInit, []byte(input))
+	got := CRC32C(crc32cInit, []byte(input))
 	if want := uint32(^uint32(standardCheckValue)); got != want {
-		t.Errorf("extCRC32C = 0x%08x, want 0x%08x (the standard value uncomplemented)", got, want)
+		t.Errorf("CRC32C = 0x%08x, want 0x%08x (the standard value uncomplemented)", got, want)
 	}
 }
 
@@ -36,8 +36,8 @@ func TestExtCRC32CChainsLikeASingleCall(t *testing.T) {
 	// Chaining is how ext4 builds every checksum: seed, then field, then field.
 	data := []byte("the quick brown fox")
 
-	whole := extCRC32C(crc32cInit, data)
-	chained := extCRC32C(extCRC32C(crc32cInit, data[:7]), data[7:])
+	whole := CRC32C(crc32cInit, data)
+	chained := CRC32C(CRC32C(crc32cInit, data[:7]), data[7:])
 
 	if whole != chained {
 		t.Errorf("chained = 0x%08x, single call = 0x%08x", chained, whole)
@@ -69,7 +69,7 @@ func TestGroupDescriptorChecksumAgainstRealImage(t *testing.T) {
 	}
 
 	fs := &FS{sb: Superblock{
-		FeatureROCompat: featureRoCompatMetadataCS,
+		FeatureROCompat: ROCompatMetadataCsum,
 		GroupDescSize:   64,
 	}}
 	copy(fs.sb.UUID[:], uuid)
@@ -98,29 +98,29 @@ func TestGroupDescriptorChecksumAgainstRealImage(t *testing.T) {
 // including the trailing bytes, as the old code did, would not.
 func TestSuperblockChecksumCoversOnlyPrecedingBytes(t *testing.T) {
 	cfg := defaultSBConfig()
-	cfg.roCompat = featureRoCompatMetadataCS
+	cfg.roCompat = ROCompatMetadataCsum
 	img := buildTestImage(t, cfg)
-	sb := img[superblockOffset : superblockOffset+superblockSize]
+	sb := img[SuperblockOffset : SuperblockOffset+SuperblockSize]
 
 	// Stamp the checksum the way mke2fs does: over the bytes preceding the field.
-	correct := extCRC32C(crc32cInit, sb[:superblockChecksumOffset])
-	sb[superblockChecksumOffset+0] = byte(correct)
-	sb[superblockChecksumOffset+1] = byte(correct >> 8)
-	sb[superblockChecksumOffset+2] = byte(correct >> 16)
-	sb[superblockChecksumOffset+3] = byte(correct >> 24)
+	correct := CRC32C(crc32cInit, sb[:SbOffChecksum])
+	sb[SbOffChecksum+0] = byte(correct)
+	sb[SbOffChecksum+1] = byte(correct >> 8)
+	sb[SbOffChecksum+2] = byte(correct >> 16)
+	sb[SbOffChecksum+3] = byte(correct >> 24)
 
-	fs := &FS{sb: Superblock{FeatureROCompat: featureRoCompatMetadataCS}}
+	fs := &FS{sb: Superblock{FeatureROCompat: ROCompatMetadataCsum}}
 	if err := fs.verifySuperblockChecksum(sb); err != nil {
 		t.Errorf("correctly stamped superblock failed verification: %v", err)
 	}
 
 	// The old computation folded in the four zeroed checksum bytes.
-	padded := make([]byte, superblockSize)
+	padded := make([]byte, SuperblockSize)
 	copy(padded, sb)
-	for i := superblockChecksumOffset; i < superblockSize; i++ {
+	for i := SbOffChecksum; i < SuperblockSize; i++ {
 		padded[i] = 0
 	}
-	if extCRC32C(crc32cInit, padded) == correct {
+	if CRC32C(crc32cInit, padded) == correct {
 		t.Error("hashing the padded superblock gives the same value; the test cannot detect the regression")
 	}
 
@@ -135,8 +135,8 @@ func TestSuperblockChecksumCoversOnlyPrecedingBytes(t *testing.T) {
 // stores a seed, checksums must be keyed on it rather than on the volume UUID.
 func TestChecksumSeedIsHonoured(t *testing.T) {
 	fs := &FS{sb: Superblock{
-		FeatureROCompat: featureRoCompatMetadataCS,
-		FeatureIncompat: featureIncompatCSumSeed,
+		FeatureROCompat: ROCompatMetadataCsum,
+		FeatureIncompat: IncompatCSumSeed,
 		ChecksumSeed:    0x806ce908,
 	}}
 	copy(fs.sb.UUID[:], []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
@@ -147,7 +147,7 @@ func TestChecksumSeedIsHonoured(t *testing.T) {
 
 	// Without the feature, the seed is derived from the UUID.
 	fs.sb.FeatureIncompat = 0
-	if got := fs.csumSeed(); got != extCRC32C(crc32cInit, fs.sb.UUID[:]) {
+	if got := fs.csumSeed(); got != CRC32C(crc32cInit, fs.sb.UUID[:]) {
 		t.Errorf("csumSeed = 0x%08x, want the UUID-derived seed", got)
 	}
 }
@@ -156,22 +156,22 @@ func TestChecksumSeedIsHonoured(t *testing.T) {
 // was unusable, because a correct image always failed to open.
 func TestVerifyChecksumsOptionAcceptsAValidImage(t *testing.T) {
 	cfg := defaultSBConfig()
-	cfg.roCompat = featureRoCompatMetadataCS
+	cfg.roCompat = ROCompatMetadataCsum
 	img := buildTestImage(t, cfg)
-	sb := img[superblockOffset : superblockOffset+superblockSize]
+	sb := img[SuperblockOffset : SuperblockOffset+SuperblockSize]
 
-	correct := extCRC32C(crc32cInit, sb[:superblockChecksumOffset])
-	sb[superblockChecksumOffset+0] = byte(correct)
-	sb[superblockChecksumOffset+1] = byte(correct >> 8)
-	sb[superblockChecksumOffset+2] = byte(correct >> 16)
-	sb[superblockChecksumOffset+3] = byte(correct >> 24)
+	correct := CRC32C(crc32cInit, sb[:SbOffChecksum])
+	sb[SbOffChecksum+0] = byte(correct)
+	sb[SbOffChecksum+1] = byte(correct >> 8)
+	sb[SbOffChecksum+2] = byte(correct >> 16)
+	sb[SbOffChecksum+3] = byte(correct >> 24)
 
 	// Stamp the group descriptor too.
 	gd := img[testGroupDescOffset : testGroupDescOffset+32]
 	gd[0x1E], gd[0x1F] = 0, 0
 	g := []byte{0, 0, 0, 0}
-	seed := extCRC32C(crc32cInit, make([]byte, 16)) // UUID is all zeros in the fixture
-	crc := extCRC32C(extCRC32C(seed, g), gd)
+	seed := CRC32C(crc32cInit, make([]byte, 16)) // UUID is all zeros in the fixture
+	crc := CRC32C(CRC32C(seed, g), gd)
 	gd[0x1E] = byte(crc)
 	gd[0x1F] = byte(crc >> 8)
 

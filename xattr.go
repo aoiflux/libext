@@ -89,7 +89,7 @@ func getXAttrNamespace(index uint8) string {
 func (fs *FS) GetXAttrs(inodeNum uint32) (XAttrList, error) {
 	var result XAttrList
 	// Check if filesystem supports extended attributes
-	if (fs.sb.FeatureCompat & featureCompatExtAttr) == 0 {
+	if (fs.sb.FeatureCompat & CompatExtAttr) == 0 {
 		// No xattr support in this filesystem
 		return result, nil
 	}
@@ -188,7 +188,7 @@ func (fs *FS) GetInlineXAttrs(inode *Inode) (XAttrList, error) {
 	if inode == nil {
 		return result, nil
 	}
-	if (fs.sb.FeatureCompat & featureCompatExtAttr) == 0 {
+	if (fs.sb.FeatureCompat & CompatExtAttr) == 0 {
 		return result, nil
 	}
 	raw, err := fs.readInodeRaw(inode.Number)

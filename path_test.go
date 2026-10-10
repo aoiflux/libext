@@ -45,48 +45,48 @@ func buildNestedDirFixture(t testing.TB) []byte {
 
 	// Root directory: ".", "..", notes.txt, sub.
 	var root []byte
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, ".")...)
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, ".")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, "..")...)
 	root = append(root, dirent(nestedNotes, 20, 1, "notes.txt")...)
-	root = append(root, dirent(nestedSub, uint16(testBlockSize-44), extDirentTypeDirectory, "sub")...)
+	root = append(root, dirent(nestedSub, uint16(testBlockSize-44), FileTypeDir, "sub")...)
 	writeTestBlock(img, nestedRootBlock, root)
 
 	// sub: ".", "..", deep.txt, alias.txt (the second link to notes.txt).
 	var sub []byte
-	sub = append(sub, dirent(nestedSub, 12, extDirentTypeDirectory, ".")...)
-	sub = append(sub, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
+	sub = append(sub, dirent(nestedSub, 12, FileTypeDir, ".")...)
+	sub = append(sub, dirent(RootInode, 12, FileTypeDir, "..")...)
 	sub = append(sub, dirent(nestedDeep, 20, 1, "deep.txt")...)
 	sub = append(sub, dirent(nestedNotes, uint16(testBlockSize-44), 1, "alias.txt")...)
 	writeTestBlock(img, nestedSubBlock, sub)
 
-	writeTestInode(img, RootInode, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, RootInode, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{nestedRootBlock}, 0, 0, 0))
-	writeTestInode(img, nestedSub, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, nestedSub, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{nestedSubBlock}, 0, 0, 0))
 
 	// notes.txt, with a full timestamp set and a non-zero generation.
 	notes := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 1234)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 2)
-		binary.LittleEndian.PutUint32(raw[inodeOffMtime:], 0x69e58838)
-		binary.LittleEndian.PutUint32(raw[inodeOffAtime:], 0x69e58839)
-		binary.LittleEndian.PutUint32(raw[inodeOffCtime:], 0x69e5883A)
-		binary.LittleEndian.PutUint16(raw[inodeOffUIDLo:], 1000)
-		binary.LittleEndian.PutUint16(raw[inodeOffGIDLo:], 1001)
-		binary.LittleEndian.PutUint32(raw[inodeOffGeneration:], testGeneration)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 1234)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 2)
+		binary.LittleEndian.PutUint32(raw[InodeOffMtime:], 0x69e58838)
+		binary.LittleEndian.PutUint32(raw[InodeOffAtime:], 0x69e58839)
+		binary.LittleEndian.PutUint32(raw[InodeOffCtime:], 0x69e5883A)
+		binary.LittleEndian.PutUint16(raw[InodeOffUIDLo:], 1000)
+		binary.LittleEndian.PutUint16(raw[InodeOffGIDLo:], 1001)
+		binary.LittleEndian.PutUint32(raw[InodeOffGeneration:], testGeneration)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+(nestedNotes-1)*testInodeSize:], notes)
 
 	// deep.txt.
-	writeTestInode(img, nestedDeep, inodeTypeRegular|0o644, 99, 0, nil)
+	writeTestInode(img, nestedDeep, ModeRegular|0o644, 99, 0, nil)
 
 	// An unlinked inode: real in the table, named by no record anywhere.
 	gone := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 4096)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 0)
-		binary.LittleEndian.PutUint32(raw[inodeOffDtime:], 0x69e58900)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 4096)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 0)
+		binary.LittleEndian.PutUint32(raw[InodeOffDtime:], 0x69e58900)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+(nestedGone-1)*testInodeSize:], gone)
 
@@ -450,8 +450,8 @@ func TestPathForSurvivesDirectoryCycle(t *testing.T) {
 
 	// Point sub's ".." at sub itself. The upward walk then has nowhere to go.
 	var sub []byte
-	sub = append(sub, dirent(nestedSub, 12, extDirentTypeDirectory, ".")...)
-	sub = append(sub, dirent(nestedSub, 12, extDirentTypeDirectory, "..")...)
+	sub = append(sub, dirent(nestedSub, 12, FileTypeDir, ".")...)
+	sub = append(sub, dirent(nestedSub, 12, FileTypeDir, "..")...)
 	sub = append(sub, dirent(nestedDeep, 20, 1, "deep.txt")...)
 	sub = append(sub, dirent(nestedNotes, uint16(testBlockSize-44), 1, "alias.txt")...)
 	writeTestBlock(img, nestedSubBlock, sub)
@@ -500,10 +500,10 @@ func TestPathIndexDirsAgreeWithPaths(t *testing.T) {
 
 	// Link sub a second time, as /again, so it is reached twice.
 	var root []byte
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, ".")...)
-	root = append(root, dirent(RootInode, 12, extDirentTypeDirectory, "..")...)
-	root = append(root, dirent(nestedSub, 12, extDirentTypeDirectory, "sub")...)
-	root = append(root, dirent(nestedSub, uint16(testBlockSize-36), extDirentTypeDirectory, "again")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, ".")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, "..")...)
+	root = append(root, dirent(nestedSub, 12, FileTypeDir, "sub")...)
+	root = append(root, dirent(nestedSub, uint16(testBlockSize-36), FileTypeDir, "again")...)
 	writeTestBlock(img, nestedRootBlock, root)
 
 	fs := openFixture(t, img, Options{})

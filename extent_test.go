@@ -74,7 +74,7 @@ func TestExtentsExtentMappedWithHoles(t *testing.T) {
 		extentLeafEntry(0, 2, 100),
 		extentLeafEntry(4, 2, 200),
 	)
-	writeTestInode(img, 20, 0x81A4, 8*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 20, 0x81A4, 8*testBlockSize, InodeFlagExtents, root)
 
 	fs := openFixture(t, img, Options{})
 
@@ -97,7 +97,7 @@ func TestExtentsOmitSparse(t *testing.T) {
 		extentLeafEntry(0, 2, 100),
 		extentLeafEntry(4, 2, 200),
 	)
-	writeTestInode(img, 20, 0x81A4, 8*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 20, 0x81A4, 8*testBlockSize, InodeFlagExtents, root)
 
 	fs := openFixture(t, img, Options{})
 
@@ -121,7 +121,7 @@ func TestExtentsNoCoalesceKeepsOnDiskShape(t *testing.T) {
 		extentLeafEntry(0, 2, 100),
 		extentLeafEntry(2, 2, 102),
 	)
-	writeTestInode(img, 20, 0x81A4, 4*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 20, 0x81A4, 4*testBlockSize, InodeFlagExtents, root)
 
 	fs := openFixture(t, img, Options{})
 
@@ -150,7 +150,7 @@ func TestExtentsUnwrittenKeepsPhysicalLocation(t *testing.T) {
 		extentHeader(1, 4, 0),
 		extentLeafEntry(0, 0x8000|2, 300),
 	)
-	writeTestInode(img, 21, 0x81A4, 2*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 21, 0x81A4, 2*testBlockSize, InodeFlagExtents, root)
 
 	// Put recognisable bytes where the preallocated run points.
 	writeTestBlock(img, 300, bytes.Repeat([]byte{0xAA}, testBlockSize))
@@ -266,7 +266,7 @@ func TestMetadataBlocksReportsExtentIndexBlock(t *testing.T) {
 	writeTestBlock(img, 60, leaf)
 
 	root := inodeRoot(extentHeader(1, 4, 1), extentIndexEntry(0, 60))
-	writeTestInode(img, 25, 0x81A4, 2*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 25, 0x81A4, 2*testBlockSize, InodeFlagExtents, root)
 
 	fs := openFixture(t, img, Options{})
 
@@ -492,7 +492,7 @@ func TestExtentsRejectOverlappingRuns(t *testing.T) {
 		extentLeafEntry(0, 4, 100),
 		extentLeafEntry(2, 4, 200),
 	)
-	writeTestInode(img, 32, 0x81A4, 6*testBlockSize, inodeFlagExtents, root)
+	writeTestInode(img, 32, 0x81A4, 6*testBlockSize, InodeFlagExtents, root)
 
 	fs := openFixture(t, img, Options{})
 	if _, err := fs.Extents(32); err == nil {
@@ -518,7 +518,7 @@ func TestExtentsRefusedUnderBigalloc(t *testing.T) {
 	// Open refuses BIGALLOC outright; under Permissive the image opens, so the
 	// extent API must refuse rather than report cluster-scaled offsets.
 	cfg := defaultSBConfig()
-	cfg.roCompat |= featureRoCompatBigalloc
+	cfg.roCompat |= ROCompatBigalloc
 	img := buildTestImage(t, cfg)
 
 	root := classicRoot([]uint32{100}, 0, 0, 0)
@@ -590,5 +590,102 @@ func TestFileExtentsMatchFSExtents(t *testing.T) {
 
 	if f.Inode().Number != 36 {
 		t.Errorf("File.Inode().Number = %d, want 36", f.Inode().Number)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// leaf extent length encoding
+// ---------------------------------------------------------------------------
+
+// ee_len is not a flag bit plus a length. fs/ext4/ext4_extents.h defines
+// EXT_INIT_MAX_LEN as 1<<15: a value up to and including it is a written extent
+// of that many blocks, and only a value above it is unwritten, of ee_len minus
+// EXT_INIT_MAX_LEN blocks (ext4_ext_is_unwritten, ext4_ext_get_actual_len).
+func TestLeafExtentLengthEncoding(t *testing.T) {
+	tests := []struct {
+		eeLen     uint16
+		blocks    uint32
+		unwritten bool
+	}{
+		{0x0001, 1, false},
+		{0x7FFF, 32767, false},
+		{0x8000, 32768, false},
+		{0x8001, 1, true},
+		{0xFFFF, 32767, true},
+	}
+	for _, tc := range tests {
+		fs := newExtentFS(nil)
+		root := inodeRoot(extentHeader(1, 4, 0), extentLeafEntry(0, tc.eeLen, 10))
+		recs, err := fs.parseExtentTree(root)
+		if err != nil {
+			t.Fatalf("ee_len 0x%04x: %v", tc.eeLen, err)
+		}
+		if len(recs) != 1 {
+			t.Fatalf("ee_len 0x%04x: got %d records, want 1", tc.eeLen, len(recs))
+		}
+		if recs[0].length != tc.blocks || recs[0].unwritten != tc.unwritten {
+			t.Errorf("ee_len 0x%04x = %d blocks unwritten=%v, want %d blocks unwritten=%v",
+				tc.eeLen, recs[0].length, recs[0].unwritten, tc.blocks, tc.unwritten)
+		}
+	}
+}
+
+// stampedReaderAt serves a fixture image and, past its end, blocks whose every
+// 8 bytes hold the block's own number. It stands in for a file too large to
+// build in memory.
+type stampedReaderAt struct {
+	img  []byte
+	size int64
+}
+
+func (s stampedReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= s.size {
+		return 0, io.EOF
+	}
+	for i := range p {
+		pos := off + int64(i)
+		if pos >= s.size {
+			return i, io.EOF
+		}
+		if pos < int64(len(s.img)) {
+			p[i] = s.img[pos]
+			continue
+		}
+		block := uint64(pos / testBlockSize)
+		p[i] = byte(block >> (8 * (pos % 8)))
+	}
+	return len(p), nil
+}
+
+func (s stampedReaderAt) Size() int64 { return s.size }
+
+// A contiguous written run of exactly 32768 blocks - 128 MiB at 4 KiB blocks -
+// must read back as data, not as a hole.
+func TestReadFileThroughMaxLengthWrittenExtent(t *testing.T) {
+	const (
+		start  = 2000
+		blocks = 0x8000
+	)
+	img := buildTestImage(t, defaultSBConfig())
+	root := inodeRoot(extentHeader(1, 4, 0), extentLeafEntry(0, blocks, start))
+	writeTestInode(img, 20, 0x81A4, blocks*testBlockSize, InodeFlagExtents, root)
+
+	r := stampedReaderAt{img: img, size: (start + blocks) * testBlockSize}
+	fs, err := OpenWithOptions(r, Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	f, err := fs.Open(20)
+	if err != nil {
+		t.Fatalf("Open(20): %v", err)
+	}
+	for _, logical := range []int64{0, blocks / 2, blocks - 1} {
+		buf := make([]byte, 8)
+		if _, err := f.ReadAt(buf, logical*testBlockSize); err != nil {
+			t.Fatalf("ReadAt block %d: %v", logical, err)
+		}
+		if got, want := binary.LittleEndian.Uint64(buf), uint64(start+logical); got != want {
+			t.Errorf("logical block %d read physical stamp %d, want %d", logical, got, want)
+		}
 	}
 }

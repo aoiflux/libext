@@ -118,7 +118,7 @@ func (fs *FS) legacyOrphanChain(ctx context.Context) []uint32 {
 // OrphanFileInode returns the inode backing the ext4 orphan file, or 0 when the
 // filesystem does not use one.
 func (fs *FS) OrphanFileInode() uint32 {
-	if (fs.sb.FeatureCompat & featureCompatOrphanFile) == 0 {
+	if (fs.sb.FeatureCompat & CompatOrphanFile) == 0 {
 		return 0
 	}
 	return fs.sb.OrphanFileInode

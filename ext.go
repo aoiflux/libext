@@ -16,6 +16,10 @@
 //	Deleted data   DeletedEntries, ScanDeleted, OrphanInodes, ScanDirSlack
 //	Allocation     InodeAllocated, BlockAllocated, InodeBitmap, BlockBitmap
 //	Diagnostics    Warnings, CheckRequiredFeatures, Superblock, GroupDescriptors
+//	Verifying      Options.Strict, StrictError  (see strict.go)
+//	Codecs         CRC32C, MetadataSeed, *Checksum, EncodeTime, DecodeTime,
+//	               HasSuperBackup, DirRecLen  (see checksum.go, timestamp.go);
+//	               on-disk constants in constants.go and layout.go
 //
 // Whole-image operations also have ...Context forms that accept cancellation:
 // WalkDirContext, BuildPathIndexContext, BuildJournalIndexContext,
@@ -105,6 +109,9 @@ func openWithOptions(r io.ReaderAt, opts Options, probe bool) (*FS, error) {
 	}
 	if opts.ImageSize == 0 && probe {
 		opts.ImageSize = probeReaderSize(r)
+	}
+	if opts.Strict {
+		opts.VerifyChecksums = true
 	}
 
 	fs := &FS{r: r, imageSize: opts.ImageSize, opts: opts}

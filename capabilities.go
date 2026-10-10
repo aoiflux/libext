@@ -164,7 +164,7 @@ func (fs *FS) Capabilities() Capabilities {
 
 	return Capabilities{
 		UnicodeNames:  false,
-		CaseSensitive: sb.FeatureIncompat&featureIncompatCasefold == 0,
+		CaseSensitive: sb.FeatureIncompat&IncompatCasefold == 0,
 
 		CreationTimes: extraInodeArea,
 		// The false values below are written out rather than left to the zero
@@ -178,7 +178,7 @@ func (fs *FS) Capabilities() Capabilities {
 		POSIXPermissions:   true,
 		HardLinks:          true,
 		SymbolicLinks:      true,
-		ExtendedAttributes: sb.FeatureCompat&featureCompatExtAttr != 0,
+		ExtendedAttributes: sb.FeatureCompat&CompatExtAttr != 0,
 		SparseFiles:        true,
 		Compression:        false,
 
@@ -188,13 +188,13 @@ func (fs *FS) Capabilities() Capabilities {
 		// An external journal leaves s_journal_inum zero, so requiring the
 		// inode answers both halves of the question in one test: the volume
 		// claims a journal, and the journal is on this volume.
-		Journaled: sb.FeatureCompat&featureCompatHasJournal != 0 && sb.JournalInode != 0,
+		Journaled: sb.FeatureCompat&CompatHasJournal != 0 && sb.JournalInode != 0,
 
-		Extents:           sb.FeatureIncompat&featureIncompatExtents != 0,
-		SixtyFourBit:      sb.FeatureIncompat&featureIncompat64Bit != 0,
-		DirectoryIndex:    sb.FeatureCompat&featureCompatDirIndex != 0,
-		InlineData:        sb.FeatureIncompat&featureIncompatInlineData != 0,
-		MetadataChecksums: sb.FeatureROCompat&featureRoCompatMetadataCS != 0,
-		Bigalloc:          sb.FeatureROCompat&featureRoCompatBigalloc != 0,
+		Extents:           sb.FeatureIncompat&IncompatExtents != 0,
+		SixtyFourBit:      sb.FeatureIncompat&Incompat64Bit != 0,
+		DirectoryIndex:    sb.FeatureCompat&CompatDirIndex != 0,
+		InlineData:        sb.FeatureIncompat&IncompatInlineData != 0,
+		MetadataChecksums: sb.FeatureROCompat&ROCompatMetadataCsum != 0,
+		Bigalloc:          sb.FeatureROCompat&ROCompatBigalloc != 0,
 	}
 }

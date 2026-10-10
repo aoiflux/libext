@@ -32,17 +32,17 @@ func setItableUnused(img []byte, n uint16) {
 
 // setLastOrphan patches s_last_orphan in the superblock.
 func setLastOrphan(img []byte, inode uint32) {
-	binary.LittleEndian.PutUint32(img[superblockOffset+0xE8:], inode)
+	binary.LittleEndian.PutUint32(img[SuperblockOffset+0xE8:], inode)
 }
 
 // writeDeletedInode places an unlinked inode: a deletion time and no links.
 func writeDeletedInode(img []byte, num uint32, size uint32, blockRaw []byte, dtime uint32) {
 	raw := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], size)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 0)
-		binary.LittleEndian.PutUint32(raw[inodeOffDtime:], dtime)
-		copy(raw[inodeOffBlockRaw:], blockRaw)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], size)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 0)
+		binary.LittleEndian.PutUint32(raw[InodeOffDtime:], dtime)
+		copy(raw[InodeOffBlockRaw:], blockRaw)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+int(num-1)*testInodeSize:], raw)
 }
@@ -57,8 +57,8 @@ func buildDeletedFixture(t testing.TB) []byte {
 	// Root directory: ".", "..", a live file, and a record whose rec_len has
 	// been extended to swallow a deleted neighbour, exactly as unlink does.
 	var dir []byte
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, ".")...)
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, "..")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, ".")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, "..")...)
 
 	live := dirent(40, 40, 1, "keep.txt") // 8+8=16 padded to 16; rec_len 40
 	// The swallowed record starts where the live entry's name ends.
@@ -68,14 +68,14 @@ func buildDeletedFixture(t testing.TB) []byte {
 	dir = append(dir, dirent(42, uint16(testBlockSize-64), 1, "other.txt")...)
 	writeTestBlock(img, testDirBlock, dir)
 
-	writeTestInode(img, 2, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, 2, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{testDirBlock}, 0, 0, 0))
 
 	// keep.txt: live.
 	keep := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 100)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 100)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+39*testInodeSize:], keep)
 
@@ -85,8 +85,8 @@ func buildDeletedFixture(t testing.TB) []byte {
 
 	// other.txt: live.
 	other := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
 	})
 	copy(img[testInodeTableBlock*testBlockSize+41*testInodeSize:], other)
 
@@ -229,8 +229,8 @@ func TestScanDirSlackFlagsShadowsOfLiveEntries(t *testing.T) {
 	img := buildTestImage(t, defaultSBConfig())
 
 	var dir []byte
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, ".")...)
-	dir = append(dir, dirent(2, 12, extDirentTypeDirectory, "..")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, ".")...)
+	dir = append(dir, dirent(2, 12, FileTypeDir, "..")...)
 
 	live := dirent(40, 40, 1, "keep.txt")
 	copy(live[16:], dirent(40, 20, 1, "keep.txt")) // stale duplicate of itself
@@ -238,7 +238,7 @@ func TestScanDirSlackFlagsShadowsOfLiveEntries(t *testing.T) {
 	dir = append(dir, dirent(42, uint16(testBlockSize-64), 1, "other.txt")...)
 
 	writeTestBlock(img, testDirBlock, dir)
-	writeTestInode(img, 2, inodeTypeDir|0o755, testBlockSize, 0,
+	writeTestInode(img, 2, ModeDir|0o755, testBlockSize, 0,
 		classicRoot([]uint32{testDirBlock}, 0, 0, 0))
 
 	fs := openFixture(t, img, Options{})
@@ -603,7 +603,7 @@ func TestOrphanFileParsing(t *testing.T) {
 
 func TestOrphanFileInodeGatedOnFeature(t *testing.T) {
 	img := buildDeletedFixture(t)
-	binary.LittleEndian.PutUint32(img[superblockOffset+0x280:], 12)
+	binary.LittleEndian.PutUint32(img[SuperblockOffset+0x280:], 12)
 
 	fs := openFixture(t, img, Options{})
 	if got := fs.OrphanFileInode(); got != 0 {
@@ -611,7 +611,7 @@ func TestOrphanFileInodeGatedOnFeature(t *testing.T) {
 	}
 
 	// With the feature set, the stored inode is reported.
-	binary.LittleEndian.PutUint32(img[superblockOffset+0x5C:], featureCompatOrphanFile)
+	binary.LittleEndian.PutUint32(img[SuperblockOffset+0x5C:], CompatOrphanFile)
 	fs = openFixture(t, img, Options{})
 	if got := fs.OrphanFileInode(); got != 12 {
 		t.Errorf("OrphanFileInode = %d, want 12", got)

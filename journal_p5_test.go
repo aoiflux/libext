@@ -74,10 +74,10 @@ func buildJournalFixture(t testing.TB, journalled []byte, fsBlock uint64) []byte
 	t.Helper()
 
 	cfg := defaultSBConfig()
-	cfg.compat = featureCompatHasJournal
+	cfg.compat = CompatHasJournal
 	img := buildTestImage(t, cfg)
 
-	binary.LittleEndian.PutUint32(img[superblockOffset+0xE0:], testJournalInode)
+	binary.LittleEndian.PutUint32(img[SuperblockOffset+0xE0:], testJournalInode)
 
 	writeTestBlock(img, testJournalFirstBlock+0, jbd2Superblock(4, 2, 0))
 	writeTestBlock(img, testJournalFirstBlock+1, jbd2Descriptor(2, []uint64{fsBlock}))
@@ -89,7 +89,7 @@ func buildJournalFixture(t testing.TB, journalled []byte, fsBlock uint64) []byte
 	writeTestBlock(img, testJournalFirstBlock+3, jbd2Commit(2, 0x69e58838, 490096625))
 
 	// The journal inode maps those four blocks.
-	writeTestInode(img, testJournalInode, inodeTypeRegular|0o600, 4*testBlockSize, 0,
+	writeTestInode(img, testJournalInode, ModeRegular|0o600, 4*testBlockSize, 0,
 		classicRoot([]uint32{
 			testJournalFirstBlock, testJournalFirstBlock + 1,
 			testJournalFirstBlock + 2, testJournalFirstBlock + 3,
@@ -241,10 +241,10 @@ func TestJournalInodeVersionsRecoversPriorState(t *testing.T) {
 	// unlink that zeroed the live copy.
 	priorBlock := make([]byte, testBlockSize)
 	prior := rawInode(testInodeSize, func(raw []byte) {
-		binary.LittleEndian.PutUint16(raw[inodeOffMode:], inodeTypeRegular|0o644)
-		binary.LittleEndian.PutUint32(raw[inodeOffSizeLo:], 9999)
-		binary.LittleEndian.PutUint16(raw[inodeOffLinksCount:], 1)
-		copy(raw[inodeOffBlockRaw:], classicRoot([]uint32{100, 101}, 0, 0, 0))
+		binary.LittleEndian.PutUint16(raw[InodeOffMode:], ModeRegular|0o644)
+		binary.LittleEndian.PutUint32(raw[InodeOffSizeLo:], 9999)
+		binary.LittleEndian.PutUint16(raw[InodeOffLinksCount:], 1)
+		copy(raw[InodeOffBlockRaw:], classicRoot([]uint32{100, 101}, 0, 0, 0))
 	})
 	// Inode 3 sits at the fourth slot of the first inode table block.
 	copy(priorBlock[2*testInodeSize:], prior)
@@ -252,7 +252,7 @@ func TestJournalInodeVersionsRecoversPriorState(t *testing.T) {
 	img := buildJournalFixture(t, priorBlock, testInodeTableBlock)
 
 	// The live inode 3 has been emptied, as unlink leaves it.
-	writeTestInode(img, 3, inodeTypeRegular|0o644, 0, 0, nil)
+	writeTestInode(img, 3, ModeRegular|0o644, 0, 0, nil)
 
 	fs := openFixture(t, img, Options{})
 
