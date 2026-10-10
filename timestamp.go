@@ -68,9 +68,10 @@ func DecodeTime(sec uint32, extra uint32) time.Time {
 // 1970-01-01T00:00:00Z exactly is reported as unset too.
 //
 // Treating the base as unsigned once an epoch is present, as this package once
-// did, puts every date from 2038 to 2106 a further 2^32 seconds (136 years)
-// into the future - a plausible-looking wrong answer rather than an obvious
-// one. DecodeTime adds the epoch to the signed base instead.
+// did, puts every date whose base has its high bit set (2038 to 2106, 2174 to
+// 2242, 2310 to 2378) a further 2^32 seconds (136 years) into the future - a
+// plausible-looking wrong answer rather than an obvious one. DecodeTime adds
+// the epoch to the signed base instead.
 func decodeTime(sec uint32, extra uint32) time.Time {
 	if sec == 0 && extra == 0 {
 		return time.Time{}

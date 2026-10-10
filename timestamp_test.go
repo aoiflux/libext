@@ -29,6 +29,8 @@ var kernelTimeCases = []struct {
 	{"last-int32", "2038-01-19T03:14:07Z"},
 	{"first-post-2038", "2038-01-19T03:14:08Z"},
 	{"uint32-wrap", "2106-02-07T06:28:16Z"},
+	{"epoch-2-high-base", "2200-01-01T00:00:00Z"},
+	{"epoch-3-high-base", "2350-01-01T00:00:00Z"},
 	{"max", "2446-05-10T22:38:55Z"},
 }
 
