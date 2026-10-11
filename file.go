@@ -173,27 +173,41 @@ func (fs *FS) readAllLimit() uint64 {
 }
 
 func (fs *FS) readInodeData(inode Inode) ([]byte, error) {
+	data, _, err := fs.readInodeDataMapped(inode)
+	return data, err
+}
+
+// readInodeDataMapped is readInodeData that also returns the block map the
+// contents were read through, so a caller can name the physical block behind
+// an offset without resolving the map again. The map is nil for an empty or
+// inline inode, which own no blocks.
+func (fs *FS) readInodeDataMapped(inode Inode) ([]byte, []Extent, error) {
 	if inode.Size == 0 {
-		return []byte{}, nil
+		return []byte{}, nil, nil
 	}
 	// An inline inode owns no blocks; its contents live in the inode itself.
 	if inode.HasInline {
 		raw, err := fs.readInodeRaw(inode.Number)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return fs.inlineDataFromRaw(inode, raw)
+		data, err := fs.inlineDataFromRaw(inode, raw)
+		return data, nil, err
 	}
 	if limit := fs.readAllLimit(); inode.Size > limit {
-		return nil, fmt.Errorf("inode %d too large to read whole: %d bytes exceeds the %d byte limit",
+		return nil, nil, fmt.Errorf("inode %d too large to read whole: %d bytes exceeds the %d byte limit",
 			inode.Number, inode.Size, limit)
 	}
-	buf := make([]byte, inode.Size)
-	_, err := fs.readInodeDataAt(inode, 0, buf)
-	if err != nil && err != io.EOF {
-		return nil, err
+	exts, err := fs.dataMap(inode)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inode %d block map: %w", inode.Number, err)
 	}
-	return buf, nil
+	buf := make([]byte, inode.Size)
+	_, err = fs.readInodeDataAtMapped(inode, exts, 0, buf)
+	if err != nil && err != io.EOF {
+		return nil, nil, err
+	}
+	return buf, exts, nil
 }
 
 func (fs *FS) readInodeDataAt(inode Inode, off uint64, out []byte) (int, error) {

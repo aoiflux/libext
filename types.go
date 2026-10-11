@@ -20,6 +20,10 @@ const (
 )
 
 // Superblock contains the subset of EXT superblock fields needed by this parser.
+//
+// MountTime, WriteTime, MkfsTime and LastCheck include their *_hi bytes, as
+// the kernel's ext4_get_tstamp reads them, so they do not wrap in 2106. A time
+// that was never set is the zero time.Time.
 type Superblock struct {
 	InodesCount       uint32
 	BlocksCount       uint64
@@ -44,6 +48,8 @@ type Superblock struct {
 	LastMounted       string
 	MountTime         time.Time
 	WriteTime         time.Time
+	MkfsTime          time.Time
+	LastCheck         time.Time
 	MountCount        uint16
 	MaxMountCount     uint16
 	State             uint16

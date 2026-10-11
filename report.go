@@ -24,7 +24,7 @@ const ReportSchemaVersion = 1
 // Nothing enforces this against the repository's tags: it must be updated in
 // the same commit that moves the tag, or it will claim a version that was never
 // released.
-const LibraryVersion = "v0.4.0"
+const LibraryVersion = "v0.4.1"
 
 // EXTReport captures a filesystem-level view similar to common forensic report formats.
 //

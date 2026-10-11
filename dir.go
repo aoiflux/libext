@@ -16,7 +16,7 @@ func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 	if !inode.IsDirectory {
 		return nil, ErrNotDirectory
 	}
-	data, err := fs.readInodeData(inode)
+	data, exts, err := fs.readInodeDataMapped(inode)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,7 @@ func (fs *FS) ListDir(inodeNum uint32) ([]DirEntry, error) {
 		}
 		return stampParent(entries, inodeNum), err
 	}
-	if err := fs.strictCheckDirBlocks(inode, data); err != nil {
+	if err := fs.strictCheckDirBlocks(inode, data, exts); err != nil {
 		return nil, err
 	}
 	entries, err := fs.parseDirEntries(data)

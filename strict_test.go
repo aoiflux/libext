@@ -3,6 +3,8 @@ package libext
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"testing"
 )
 
@@ -237,5 +239,106 @@ func TestStrictErrorFormat(t *testing.T) {
 	err := strictErr(StrictHole, 12, 34, "hole of %d blocks", 2)
 	if got, want := err.Error(), "ext strict check failed: hole: inode 12 block 34: hole of 2 blocks"; got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// deepenExtentTree moves an inode's in-inode extent leaf into a block of its
+// own, so the inode's map takes one block read to resolve, and restamps the
+// checksums it touches. It returns the leaf block, which is the last zero block
+// of the image.
+func deepenExtentTree(t *testing.T, img []byte, ino uint32) uint64 {
+	t.Helper()
+	fs := openCsumImage(t, img, Options{})
+	inode, err := fs.ReadInode(ino)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if depth := binary.LittleEndian.Uint16(inode.BlockRaw[6:]); depth != 0 {
+		t.Fatalf("inode %d extent tree has depth %d, want 0", ino, depth)
+	}
+	bs := int(fs.sb.BlockSize)
+	leaf := fs.sb.BlocksCount - 1
+	for ; leaf > 0 && !bytes.Equal(img[int(leaf)*bs:int(leaf+1)*bs], make([]byte, bs)); leaf-- {
+	}
+	seed := fs.csumSeed()
+
+	n := binary.LittleEndian.Uint16(inode.BlockRaw[2:])
+	slots := uint16((bs - ExtentHeaderSize - ExtentTailSize) / ExtentEntrySize)
+	blk := img[int(leaf)*bs : int(leaf+1)*bs]
+	copy(blk, extentHeader(n, slots, 0))
+	copy(blk[ExtentHeaderSize:], inode.BlockRaw[ExtentHeaderSize:ExtentHeaderSize+int(n)*ExtentEntrySize])
+	binary.LittleEndian.PutUint32(blk[ExtentHeaderSize+int(slots)*ExtentEntrySize:],
+		ExtentTailChecksum(seed, ino, inode.Generation, blk))
+
+	tb, off, err := fs.inodeTableLocation(ino)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := img[int(tb)*bs+int(off):][:fs.sb.InodeSize]
+	root := raw[InodeOffBlockRaw : InodeOffBlockRaw+BlockMapSize]
+	clear(root)
+	copy(root, extentHeader(1, 4, 1))
+	copy(root[ExtentHeaderSize:], extentIndexEntry(0, leaf))
+	lo, hi, hasHi := InodeChecksum(seed, ino, inode.Generation, raw, len(raw))
+	binary.LittleEndian.PutUint16(raw[InodeOffChecksumLo:], lo)
+	if hasHi {
+		binary.LittleEndian.PutUint16(raw[InodeOffChecksumHi:], hi)
+	}
+	return leaf
+}
+
+// blockReads counts the reads that cover one byte offset.
+type blockReads struct {
+	r   *bytes.Reader
+	off int64
+	n   int
+}
+
+func (c *blockReads) ReadAt(p []byte, off int64) (int, error) {
+	if off <= c.off && c.off < off+int64(len(p)) {
+		c.n++
+	}
+	return c.r.ReadAt(p, off)
+}
+
+func (c *blockReads) Size() int64 { return c.r.Size() }
+
+var _ io.ReaderAt = (*blockReads)(nil)
+
+// A directory-tail error names the physical block from the map the directory
+// was just read through. Building the error must not resolve the map again,
+// and must report the same check, inode, block and detail as before.
+func TestStrictDirTailErrorReusesBlockMap(t *testing.T) {
+	img := loadCsumImage(t)
+	fs := openCsumImage(t, img, Options{})
+	many := lookupIno(t, fs, "/many")
+	exts, err := fs.InodeExtents(many, ExtentOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirBlock := exts[0].PhysicalBlock
+	leaf := deepenExtentTree(t, img, many.Number)
+	if _, err := openCsumImage(t, img, Options{Strict: true}).ListDir(many.Number); err != nil {
+		t.Fatalf("strict ListDir of the deepened directory: %v", err)
+	}
+
+	tail := int(dirBlock+1)*int(fs.sb.BlockSize) - DirTailSize
+	clear(img[tail : tail+DirTailSize])
+	reads := &blockReads{r: bytes.NewReader(img), off: int64(leaf) * int64(fs.sb.BlockSize)}
+	strict, err := OpenWithOptions(reads, Options{Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = strict.ListDir(many.Number)
+	assertStrict(t, err, StrictDirTail, false)
+	var se *StrictError
+	errors.As(err, &se)
+	want := StrictError{Check: StrictDirTail, Inode: many.Number, Block: dirBlock,
+		Detail: "logical block 0 has no checksum tail"}
+	if *se != want {
+		t.Errorf("error = %+v, want %+v", *se, want)
+	}
+	if reads.n != 1 {
+		t.Errorf("ListDir read the extent leaf %d times, want 1: the error report resolved the map again", reads.n)
 	}
 }

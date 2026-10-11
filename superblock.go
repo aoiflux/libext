@@ -1,6 +1,9 @@
 package libext
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 func (fs *FS) loadSuperblock() error {
 	buf := make([]byte, SuperblockSize)
@@ -19,8 +22,10 @@ func (fs *FS) loadSuperblock() error {
 	sb.BlockSize = 1024 << sb.LogBlockSize
 	sb.BlocksPerGroup = le32(buf, SbOffBlocksPerGroup)
 	sb.InodesPerGroup = le32(buf, SbOffInodesPerGroup)
-	sb.MountTime = unixTime(le32(buf, SbOffMountTime))
-	sb.WriteTime = unixTime(le32(buf, SbOffWriteTime))
+	sb.MountTime = superblockTime(buf, SbOffMountTime, SbOffMountTimeHi)
+	sb.WriteTime = superblockTime(buf, SbOffWriteTime, SbOffWriteTimeHi)
+	sb.MkfsTime = superblockTime(buf, SbOffMkfsTime, SbOffMkfsTimeHi)
+	sb.LastCheck = superblockTime(buf, SbOffLastCheck, SbOffLastCheckHi)
 	sb.MountCount = le16(buf, SbOffMountCount)
 	sb.MaxMountCount = le16(buf, SbOffMaxMountCount)
 	sb.Magic = le16(buf, SbOffMagic)
@@ -160,4 +165,17 @@ func detectFSKind(sb Superblock) FSKind {
 		return FSKindExt1
 	}
 	return FSKindExt2
+}
+
+// superblockTime decodes a superblock timestamp as the kernel's
+// ext4_get_tstamp does: the 32-bit low word, unsigned, plus the *_hi byte
+// shifted above it. Unlike an inode time the low word is never signed, and
+// without the high byte every time wraps in 2106. A field whose words are both
+// zero was never set, and is reported as the zero time.Time.
+func superblockTime(buf []byte, lo, hi int) time.Time {
+	sec := int64(le32(buf, lo)) | int64(buf[hi])<<32
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
 }

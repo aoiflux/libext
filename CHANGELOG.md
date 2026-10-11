@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.4.1
+
+### Fixed
+
+- **Superblock times wrapped in 2106.** `MountTime` and `WriteTime` read only
+  the 32-bit low word and ignored `s_mtime_hi` and `s_wtime_hi`. They are now
+  decoded as the kernel's `ext4_get_tstamp` does: the low word, unsigned, plus
+  the high byte shifted above it. For example, `s_wtime` of `0x00000010` with
+  `s_wtime_hi` of 1 is 2106-02-07T06:28:32Z, where v0.4.0 returned
+  1970-01-01T00:00:16Z. Times with a zero high byte are unchanged.
+- **A Strict directory-tail error re-read the directory's block map.** To name
+  the physical block in the error, libext resolved the directory's extent map
+  a second time. It now uses the map the directory was just read through. The
+  error's check, inode, block and detail are unchanged.
+
+### Added
+
+- `Superblock.MkfsTime` and `Superblock.LastCheck`, decoded from
+  `s_mkfs_time` and `s_lastcheck` with their high bytes.
+- A reference image with one written extent of exactly 32768 blocks, which is
+  `ee_len` `0x8000` on disk (`testdata/e2fs_bigextent.img.bz2`, built by
+  `testdata/mkbigextent.sh`). The v0.4.0 fix for such extents was tested only
+  on synthetic images. mke2fs `-d` stops runs at 32767 blocks, so the script
+  inserts the extent with debugfs, and e2fsck passes the result. The image is
+  668 bytes; the test reads it without holding the 128 MiB in memory.
+
+### Changed
+
+- `LibraryVersion`, recorded on every `EXTReport`, is now `v0.4.1`.
+
 ## v0.4.0
 
 ### Fixed

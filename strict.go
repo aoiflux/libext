@@ -125,12 +125,13 @@ func (fs *FS) strictCheckMap(inode Inode, exts []Extent) error {
 }
 
 // strictCheckDirBlocks verifies the checksum tail that ends each directory
-// leaf block on a metadata_csum filesystem.
+// leaf block on a metadata_csum filesystem. exts is the map data was read
+// through, which names the physical block in an error.
 //
 // htree index blocks carry a different tail (struct dx_tail) and are skipped,
 // recognised as the kernel's __ext4_read_dirblock recognises them: on an
 // indexed directory, block 0, and any block whose first record spans it whole.
-func (fs *FS) strictCheckDirBlocks(inode Inode, data []byte) error {
+func (fs *FS) strictCheckDirBlocks(inode Inode, data []byte, exts []Extent) error {
 	if !fs.opts.Strict || inode.HasInline || !fs.shouldValidateMetadataChecksums() {
 		return nil
 	}
@@ -138,7 +139,7 @@ func (fs *FS) strictCheckDirBlocks(inode Inode, data []byte) error {
 	seed := fs.csumSeed()
 	for b := 0; b*bs < len(data); b++ {
 		if b*bs+bs > len(data) {
-			return strictErr(StrictDirTail, inode.Number, fs.dirPhysicalBlock(inode, b),
+			return strictErr(StrictDirTail, inode.Number, dirPhysicalBlock(exts, b),
 				"directory size %d is not a whole number of blocks", inode.Size)
 		}
 		blk := data[b*bs : b*bs+bs]
@@ -147,12 +148,12 @@ func (fs *FS) strictCheckDirBlocks(inode Inode, data []byte) error {
 		}
 		t := blk[bs-DirTailSize:]
 		if le32(t, 0) != 0 || le16(t, 4) != DirTailSize || t[6] != 0 || t[7] != DirTailFileType {
-			return strictErr(StrictDirTail, inode.Number, fs.dirPhysicalBlock(inode, b),
+			return strictErr(StrictDirTail, inode.Number, dirPhysicalBlock(exts, b),
 				"logical block %d has no checksum tail", b)
 		}
 		stored := le32(t, 8)
 		if calc := DirTailChecksum(seed, inode.Number, inode.Generation, blk); calc != stored {
-			e := strictErr(StrictDirTail, inode.Number, fs.dirPhysicalBlock(inode, b),
+			e := strictErr(StrictDirTail, inode.Number, dirPhysicalBlock(exts, b),
 				"logical block %d stored=0x%08x calc=0x%08x", b, stored, calc).(*StrictError)
 			e.checksum = true
 			return e
@@ -171,13 +172,9 @@ func dirRecLen(blk []byte, bs int) int {
 	return n
 }
 
-// dirPhysicalBlock locates a directory's logical block for an error report,
-// or returns 0 when it cannot.
-func (fs *FS) dirPhysicalBlock(inode Inode, logical int) uint64 {
-	exts, err := fs.InodeExtents(inode, ExtentOptions{})
-	if err != nil {
-		return 0
-	}
+// dirPhysicalBlock locates a directory's logical block in its map for an
+// error report, or returns 0 when it cannot.
+func dirPhysicalBlock(exts []Extent, logical int) uint64 {
 	e, ok := lookupExtent(exts, uint64(logical))
 	if !ok || e.Sparse() {
 		return 0
