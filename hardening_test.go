@@ -99,6 +99,17 @@ func writeTestInode(img []byte, num uint32, mode uint16, size uint32, flags uint
 	copy(raw[0x28:0x28+60], blockRaw)
 }
 
+// writeRawInode places a prebuilt inode of inodeSize bytes into the fixture's
+// inode table.
+//
+// writeTestInode's stride is fixed at the 128-byte testInodeSize, which has no
+// room for the xattr area inline overflow lives in. An inode rendered by
+// buildInodeWithXAttrs has to be placed through here instead.
+func writeRawInode(img []byte, inodeSize int, num uint32, raw []byte) {
+	off := testInodeTableBlock*testBlockSize + int(num-1)*inodeSize
+	copy(img[off:off+inodeSize], raw)
+}
+
 func newFixtureReader(img []byte) io.ReaderAt {
 	return bytes.NewReader(img)
 }

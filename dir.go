@@ -278,6 +278,15 @@ func (fs *FS) LookupPath(p string) (DirEntry, error) {
 // The "." and ".." records are never reported. A directory reachable more than
 // once is walked once and warned about rather than followed again.
 //
+// A directory that cannot be listed does not end the walk. Its own record has
+// already been reported - it is real evidence whether or not what it points at
+// survives - a WarnDegradedRead names its inode, its path and the error, and
+// the walk continues with its siblings; where the listing yielded the records
+// read before the fault, those are reported too. Options.Strict ends the walk
+// instead, because a walk verifying an image must not pass over a directory it
+// could not read, and Options.StopOnReadError asks for the same without
+// Strict's other checks.
+//
 // A non-nil error from the callback ends the walk and is returned unchanged.
 func (fs *FS) WalkDir(startInode uint32, fn func(p string, entry DirEntry) error) error {
 	return fs.WalkDirContext(context.Background(), startInode, fn)
@@ -379,7 +388,22 @@ func (w *dirWalk) descend(inodeNum uint32, curPath string, depth int) error {
 	}
 	entries, err := w.fs.ListDir(inodeNum)
 	if err != nil {
-		return err
+		// Strict is verifying an image, so a directory it could not read ends
+		// the walk; StopOnReadError asks for the same without Strict's other
+		// checks. Otherwise the directory is warned about and the walk goes on
+		// with its siblings: one damaged directory must not discard every
+		// entry after it, in it, and in every ancestor. buildPathIndex makes
+		// the same choice over the same listing call.
+		if w.fs.opts.Strict || w.fs.opts.StopOnReadError {
+			return err
+		}
+		w.fs.warn(WarnDegradedRead, "", fmt.Sprintf(
+			"directory inode %d (at %s) is unreadable (%v); entries it could not read are not reported",
+			inodeNum, curPath, err))
+		// entries may still hold the records read before the fault: ListDir
+		// stamps through its error rather than around it, and those records
+		// were read from this directory whichever way its tail decoded.
+		// Falling through reports them.
 	}
 	for _, e := range entries {
 		if e.Name == "." || e.Name == ".." {

@@ -51,13 +51,30 @@ type Options struct {
 	//   - a regular file, directory or slow symlink mapped by block pointers
 	//     rather than extents or inline data on a filesystem with the extents
 	//     feature. A filesystem converted from ext3 legitimately keeps such
-	//     inodes, so Strict rejects it.
+	//     inodes, so Strict rejects it
+	//   - a directory a walk could not list, which outside Strict is a warning
+	//     the walk carries on past
 	//
 	// A failed check returns a *StrictError, which wraps ErrStrict, and
-	// ErrChecksumMismatch as well when the check is a checksum. Strict changes
-	// nothing for a caller that does not set it. It is meant for verifying
-	// images, not for recovering data from damaged ones: leave it off for that.
+	// ErrChecksumMismatch as well when the check is a checksum. The two read
+	// failures above, an entry whose inode cannot be read and a directory that
+	// cannot be listed, instead end the walk with the read error itself, which
+	// is not a *StrictError. Strict changes nothing for a caller that does not
+	// set it. It is meant for verifying images, not for recovering data from
+	// damaged ones: leave it off for that.
 	Strict bool
+
+	// StopOnReadError makes a directory that cannot be listed end a WalkDir
+	// and return the underlying error. By default such a directory is reported
+	// - its own record is real evidence whether or not what it points at
+	// survives - a WarnDegradedRead names its inode, its path and the error,
+	// and the walk continues with its siblings, which is what BuildPathIndex
+	// already does over the same listing call.
+	//
+	// Options.Strict stops either way: a walk verifying an image must not pass
+	// over a directory it could not read. libfat and libxfat carry the same
+	// field, in their WalkOptions, with the same default.
+	StopOnReadError bool
 
 	// MaxExtents caps the number of extent records parsed for a single inode.
 	// 0 selects the library default.

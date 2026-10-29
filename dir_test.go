@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -504,5 +507,191 @@ func TestWalkDirWithInodeAvoidsTheSecondRead(t *testing.T) {
 	if once >= twice {
 		t.Errorf("WalkDirWithInode cost %d reads and walk-then-read cost %d; "+
 			"handing the inode over is meant to remove the second read", once, twice)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EXT-U2: one directory that cannot be listed must not end the walk
+// ---------------------------------------------------------------------------
+
+const (
+	damagedRootBlock = 210
+	damagedSubBlock  = 211
+
+	damagedA    = 50 // /a.txt, listed before the damage
+	damagedBad  = 51 // /baddir, a directory whose extent tree cannot be parsed
+	damagedZ    = 52 // /z.txt, listed after it - the entry that used to vanish
+	damagedSub  = 53 // /sub, a directory whose tail record is malformed
+	damagedNote = 54 // /sub/notes.txt, the record before that damage
+)
+
+// buildDamagedSubdirFixture lays out root(2) -> a.txt, baddir, z.txt in that
+// record order, where baddir cannot be listed at all.
+//
+// The EXTENTS flag over a garbage i_block is what makes the failure
+// deterministic: rawExtents takes the extent branch, the node magic is wrong,
+// and because the flag asserts the tree is there, extent.go refuses rather
+// than reinterpreting the bytes as a classic block map. No reliance on where
+// the image ends or on a short read.
+func buildDamagedSubdirFixture(t testing.TB) []byte {
+	t.Helper()
+	img := buildTestImage(t, defaultSBConfig())
+
+	var root []byte
+	root = append(root, dirent(RootInode, 12, FileTypeDir, ".")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, "..")...)
+	root = append(root, dirent(damagedA, 16, 1, "a.txt")...)
+	root = append(root, dirent(damagedBad, 16, FileTypeDir, "baddir")...)
+	root = append(root, dirent(damagedZ, uint16(testBlockSize-56), 1, "z.txt")...)
+	writeTestBlock(img, damagedRootBlock, root)
+
+	writeTestInode(img, RootInode, ModeDir|0o755, testBlockSize, 0,
+		classicRoot([]uint32{damagedRootBlock}, 0, 0, 0))
+	writeTestInode(img, damagedA, ModeRegular|0o644, 0, 0, nil)
+	writeTestInode(img, damagedZ, ModeRegular|0o644, 0, 0, nil)
+	writeTestInode(img, damagedBad, ModeDir|0o755, testBlockSize,
+		InodeFlagExtents, bytes.Repeat([]byte{0xAB}, 60))
+
+	return img
+}
+
+// degradedWarnings is the subset of a volume's warnings a damaged read
+// produces, which is what these tests count.
+func degradedWarnings(fs *FS) []Warning {
+	var out []Warning
+	for _, w := range fs.Warnings() {
+		if w.Code == WarnDegradedRead {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func TestWalkDirContinuesPastUnreadableDirectory(t *testing.T) {
+	// Before this was fixed, the walk returned the extent error from baddir and
+	// /z.txt - every entry after it, in it, and in every ancestor - was never
+	// reported. A caller lost the rest of the volume to one damaged directory
+	// and had no way to ask for it to be skipped.
+	fs := openFixture(t, buildDamagedSubdirFixture(t), Options{})
+
+	var seen []string
+	if err := fs.WalkDir(RootInode, func(p string, _ DirEntry) error {
+		seen = append(seen, p)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkDir returned %v; one unreadable directory must not end the walk", err)
+	}
+
+	want := []string{"/a.txt", "/baddir", "/z.txt"}
+	if !slices.Equal(seen, want) {
+		t.Errorf("walk reported %v, want %v", seen, want)
+	}
+
+	degraded := degradedWarnings(fs)
+	if len(degraded) != 1 {
+		t.Fatalf("got %d degraded-read warnings, want exactly 1: %v", len(degraded), degraded)
+	}
+	if d := degraded[0].Detail; !strings.Contains(d, "/baddir") ||
+		!strings.Contains(d, fmt.Sprint(damagedBad)) {
+		t.Errorf("warning %q names neither the path /baddir nor inode %d", d, damagedBad)
+	}
+}
+
+func TestWalkDirWithInodeContinuesPastUnreadableDirectory(t *testing.T) {
+	// Both callback shapes go through one descend, so the policy cannot differ
+	// between them. Pinned so a later change to one cannot drift from the other.
+	fs := openFixture(t, buildDamagedSubdirFixture(t), Options{})
+
+	var seen []string
+	if err := fs.WalkDirWithInode(RootInode, func(p string, _ DirEntry, _ Inode) error {
+		seen = append(seen, p)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkDirWithInode returned %v, want nil", err)
+	}
+
+	want := []string{"/a.txt", "/baddir", "/z.txt"}
+	if !slices.Equal(seen, want) {
+		t.Errorf("walk reported %v, want %v", seen, want)
+	}
+}
+
+func TestWalkDirStopsAtUnreadableDirectoryUnderStrict(t *testing.T) {
+	// Strict is for verifying an image, so a directory it could not read is a
+	// verdict rather than a warning: the walk must not pass over it.
+	fs := openFixture(t, buildDamagedSubdirFixture(t), Options{Strict: true})
+
+	err := fs.WalkDir(RootInode, func(string, DirEntry) error { return nil })
+	if err == nil {
+		t.Fatal("WalkDir under Strict returned nil for a directory it could not list")
+	}
+	if !strings.Contains(err.Error(), "extent tree") {
+		t.Errorf("error = %v, want the extent tree failure that stopped the walk", err)
+	}
+}
+
+func TestWalkDirStopsAtUnreadableDirectoryWithStopOnReadError(t *testing.T) {
+	// The opt-in back to the old behaviour, without Strict's other checks.
+	fs := openFixture(t, buildDamagedSubdirFixture(t), Options{StopOnReadError: true})
+
+	err := fs.WalkDir(RootInode, func(string, DirEntry) error { return nil })
+	if err == nil {
+		t.Fatal("WalkDir with StopOnReadError returned nil for a directory it could not list")
+	}
+	if !strings.Contains(err.Error(), "extent tree") {
+		t.Errorf("error = %v, want the extent tree failure that stopped the walk", err)
+	}
+}
+
+func TestWalkDirReportsPartialEntriesOfDamagedDirectory(t *testing.T) {
+	// ListDir stamps through its error rather than around it: a malformed
+	// record still yields the records read before the fault, and those were
+	// read from this directory whichever way its tail decoded. The walk used
+	// to throw them away along with the rest of the tree.
+	img := buildTestImage(t, defaultSBConfig())
+
+	var root []byte
+	root = append(root, dirent(RootInode, 12, FileTypeDir, ".")...)
+	root = append(root, dirent(RootInode, 12, FileTypeDir, "..")...)
+	root = append(root, dirent(damagedSub, uint16(testBlockSize-24), FileTypeDir, "sub")...)
+	writeTestBlock(img, damagedRootBlock, root)
+
+	var sub []byte
+	sub = append(sub, dirent(damagedSub, 12, FileTypeDir, ".")...)
+	sub = append(sub, dirent(RootInode, 12, FileTypeDir, "..")...)
+	sub = append(sub, dirent(damagedNote, 20, 1, "notes.txt")...)
+	// A record claiming a length that overruns the block.
+	bad := make([]byte, 12)
+	binary.LittleEndian.PutUint32(bad[0:], damagedNote)
+	binary.LittleEndian.PutUint16(bad[4:], 8192)
+	bad[6] = 4
+	bad[7] = 1
+	copy(bad[8:], "oops")
+	sub = append(sub, bad...)
+	writeTestBlock(img, damagedSubBlock, sub)
+
+	writeTestInode(img, RootInode, ModeDir|0o755, testBlockSize, 0,
+		classicRoot([]uint32{damagedRootBlock}, 0, 0, 0))
+	writeTestInode(img, damagedSub, ModeDir|0o755, testBlockSize, 0,
+		classicRoot([]uint32{damagedSubBlock}, 0, 0, 0))
+	writeTestInode(img, damagedNote, ModeRegular|0o644, 0, 0, nil)
+
+	fs := openFixture(t, img, Options{})
+
+	var seen []string
+	if err := fs.WalkDir(RootInode, func(p string, _ DirEntry) error {
+		seen = append(seen, p)
+		return nil
+	}); err != nil {
+		t.Fatalf("WalkDir returned %v, want nil", err)
+	}
+
+	want := []string{"/sub", "/sub/notes.txt"}
+	if !slices.Equal(seen, want) {
+		t.Errorf("walk reported %v, want %v; the records read before the fault were discarded",
+			seen, want)
+	}
+	if n := len(degradedWarnings(fs)); n != 1 {
+		t.Errorf("got %d degraded-read warnings, want exactly 1", n)
 	}
 }

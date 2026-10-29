@@ -27,9 +27,10 @@ func (k bitmapKind) String() string {
 
 // BlockBitmap returns the raw allocation bitmap for a block group.
 //
-// The result covers BlocksPerGroup bits. A group flagged BlockUninit has no
-// meaningful bitmap on disk; an all-zero bitmap is returned for it, since none
-// of its blocks are in use.
+// The result covers BlocksPerGroup bits, or one block's worth where the
+// superblock claims more bits than a bitmap block can hold. A group flagged
+// BlockUninit has no meaningful bitmap on disk; an all-zero bitmap is returned
+// for it, since none of its blocks are in use.
 //
 // The returned slice is cached and shared between callers. Treat it as
 // read-only: bitmaps do not change while an image is open, and copying one per
@@ -40,9 +41,11 @@ func (fs *FS) BlockBitmap(group uint32) ([]byte, error) {
 
 // InodeBitmap returns the raw allocation bitmap for a block group.
 //
-// The result covers InodesPerGroup bits. A group flagged InodeUninit returns an
-// all-zero bitmap: its inode table has never been written, so nothing in it is
-// allocated regardless of what the bytes on disk happen to say.
+// The result covers InodesPerGroup bits, or one block's worth where the
+// superblock claims more bits than a bitmap block can hold. A group flagged
+// InodeUninit returns an all-zero bitmap: its inode table has never been
+// written, so nothing in it is allocated regardless of what the bytes on disk
+// happen to say.
 //
 // The same caching and read-only caveat as BlockBitmap applies.
 func (fs *FS) InodeBitmap(group uint32) ([]byte, error) {
@@ -118,6 +121,13 @@ func (fs *FS) loadBitmap(group uint32, kind bitmapKind) ([]byte, error) {
 	}
 
 	size := int((bits + bitsPerByte - 1) / bitsPerByte)
+	// A bitmap occupies one block, which is the clamp readBitmap already
+	// applies on the read path. s_blocks_per_group is only checked non-zero,
+	// so without this an uninitialised group's bitmap is an allocation sized
+	// by an unchecked on-disk field.
+	if max := int(fs.sb.BlockSize); size > max {
+		size = max
+	}
 	if uninit {
 		return make([]byte, size), nil
 	}

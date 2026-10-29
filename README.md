@@ -101,6 +101,8 @@ Implemented or available now:
 - Direct, indirect, double-indirect, and triple-indirect block mapping
 - Extent-based file reads
 - Sparse and hole-aware reads
+- Inline-data files and directories, through both the whole-file and the
+  streaming read paths
 - Root, inode-number, and path-based opens
 - Directory parsing and recursive traversal
 - Symlink target reads
@@ -168,6 +170,14 @@ Opening and traversal:
 Entries from a walk carry `Generation` and `ParentInode` alongside the rest of
 their inode metadata, because the walk reads each child's inode anyway to decide
 whether to descend.
+
+A directory that cannot be listed does not end a walk. Its own record has
+already been reported, a `WarnDegradedRead` names its inode, its path and the
+error, and the walk continues with its siblings; where the listing yielded the
+records read before the fault, those are reported too. Set
+`Options.StopOnReadError bool` to have the walk return the first such error
+instead. `Options.Strict` ends the walk as well, because a walk verifying an
+image must not pass over a directory it could not read.
 
 Naming an inode:
 
@@ -248,7 +258,12 @@ checksum tails of extent tree and directory blocks. It refuses:
 - named inodes that are unlinked or deleted (checked during a walk);
 - regular files, directories and slow symlinks that use block pointers on a
   filesystem with the extents feature. An ext3 volume converted to ext4
-  legitimately keeps such inodes, so Strict rejects it.
+  legitimately keeps such inodes, so Strict rejects it;
+- a directory a walk could not list, which otherwise degrades to a warning.
+
+A failed check returns a `*StrictError`. The two read failures, an entry whose
+inode cannot be read and a directory that cannot be listed, end the walk with
+the read error itself instead.
 
 Leaving `Strict` off changes nothing.
 

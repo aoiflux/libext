@@ -20,6 +20,13 @@ type File struct {
 	extents    []Extent
 	extentsErr error
 	mapped     bool
+
+	// inline caches an inline inode's contents on the same terms: resolved
+	// once, so a sequence of reads costs one inode read rather than one per
+	// call. An inline inode has no block map, so the two are never both used.
+	inline     []byte
+	inlineErr  error
+	inlineRead bool
 }
 
 // blockMap resolves and caches the file's block map.
@@ -29,6 +36,20 @@ func (f *File) blockMap() ([]Extent, error) {
 		f.mapped = true
 	}
 	return f.extents, f.extentsErr
+}
+
+// inlineData resolves and caches the contents of an inline inode.
+func (f *File) inlineData() ([]byte, error) {
+	if !f.inlineRead {
+		f.inlineRead = true
+		raw, err := f.volume.readInodeRaw(f.inode.Number)
+		if err != nil {
+			f.inlineErr = err
+		} else {
+			f.inline, f.inlineErr = f.volume.inlineDataFromRaw(f.inode, raw)
+		}
+	}
+	return f.inline, f.inlineErr
 }
 
 // Inode returns the inode backing the file.
@@ -78,6 +99,29 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	if uint64(off) >= f.inode.Size {
 		return 0, io.EOF
 	}
+
+	// An inline inode owns no blocks: its contents are in the inode itself.
+	// Read through the block map it maps nothing, and the range comes back as
+	// zeros - a wrong answer rather than an error. ReadFile has always served
+	// these from the inode (readInodeDataMapped); the streaming path must too.
+	if f.inode.HasInline {
+		data, err := f.inlineData()
+		if err != nil {
+			return 0, err
+		}
+		// Size bounds the read above, but a size larger than the bytes
+		// actually stored survives that check, and a read there is the end of
+		// the file rather than a span of fabricated zeros.
+		if off >= int64(len(data)) {
+			return 0, io.EOF
+		}
+		n := copy(p, data[off:])
+		if n < len(p) {
+			return n, io.EOF
+		}
+		return n, nil
+	}
+
 	exts, err := f.blockMap()
 	if err != nil {
 		return 0, fmt.Errorf("inode %d block map: %w", f.inode.Number, err)
@@ -208,14 +252,6 @@ func (fs *FS) readInodeDataMapped(inode Inode) ([]byte, []Extent, error) {
 		return nil, nil, err
 	}
 	return buf, exts, nil
-}
-
-func (fs *FS) readInodeDataAt(inode Inode, off uint64, out []byte) (int, error) {
-	exts, err := fs.dataMap(inode)
-	if err != nil {
-		return 0, fmt.Errorf("inode %d block map: %w", inode.Number, err)
-	}
-	return fs.readInodeDataAtMapped(inode, exts, off, out)
 }
 
 // dataMap is the block map a read of the inode's contents is served from. It

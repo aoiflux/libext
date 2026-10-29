@@ -128,6 +128,15 @@
 // partial answer beats none. Whatever the setting, Warnings reports where the
 // answer may be incomplete.
 //
+// Whole-tree operations degrade rather than stop. A directory that cannot be
+// listed is named in a WarnDegradedRead and skipped, and the walk or index
+// build carries on with its siblings: one damaged directory must not cost a
+// caller every entry after it. That is WalkDir and its variants,
+// BuildPathIndex, ScanDeleted and the reports built on them. Set
+// Options.StopOnReadError to have a walk return the first such error instead;
+// Options.Strict does so as well, since a walk verifying an image must not
+// pass over a directory it could not read.
+//
 // # Verifying well-formed images
 //
 // The default is tolerant: a parser for evidence has to read what it is given.
@@ -137,7 +146,9 @@
 // directory blocks, and refuses holes, unwritten runs and short maps in data
 // being read, extents past the end of the filesystem, duplicate names, named
 // inodes that are unlinked or deleted, and block-mapped inodes on an extents
-// filesystem. A refusal is a *StrictError wrapping ErrStrict:
+// filesystem. A walk under Strict also stops at a directory or inode it cannot
+// read, returning that read error. Every other refusal is a *StrictError
+// wrapping ErrStrict:
 //
 //	vol, err := libext.OpenWithOptions(r, libext.Options{Strict: true})
 //	...

@@ -213,6 +213,55 @@ func FuzzParseInode(f *testing.F) {
 	})
 }
 
+// FuzzInlineInode drives the inline-data assembler over a patched inode.
+//
+// FuzzOpen reaches InlineData only through the root, which is a directory, so
+// its size is the low word alone and the 64-bit claim behind PAR-35 was out of
+// reach. This target forces the inline flag on, so a regular file's
+// i_size_high is in scope.
+func FuzzInlineInode(f *testing.F) {
+	f.Add(buildInodeWithXAttrs(f, ModeRegular|0o644, 19, InodeFlagInlineData,
+		[]byte("tiny inline content"), nil))
+	f.Add(buildInodeWithXAttrs(f, ModeRegular|0o644, 128, InodeFlagInlineData,
+		bytes.Repeat([]byte("H"), inlineDataInBlock), []inodeXAttr{
+			{index: xattrIndexSystem, name: inlineDataAttrName,
+				value: bytes.Repeat([]byte("T"), 68)},
+		}))
+	f.Add(forgedInlineInode(f))
+	f.Add(make([]byte, 256))
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		// parseInode indexes fixed offsets, so anything shorter than the base
+		// inode is the caller's responsibility, as in FuzzParseInode.
+		if len(raw) < GoodOldInodeSize {
+			return
+		}
+		// The flag is what puts an inode on this path at all, so it is forced
+		// rather than left to the mutation: an input that cleared it would
+		// exercise nothing.
+		raw = append([]byte(nil), raw...)
+		binary.LittleEndian.PutUint32(raw[InodeOffFlags:],
+			le32(raw, InodeOffFlags)|InodeFlagInlineData)
+
+		inode := parseInode(raw, 12)
+
+		start := time.Now()
+		data, err := (&FS{}).inlineDataFromRaw(inode, raw)
+		if elapsed := time.Since(start); elapsed > fuzzOpBudget {
+			t.Fatalf("inlineDataFromRaw took %v on a %d byte inode, over the %v budget",
+				elapsed, len(raw), fuzzOpBudget)
+		}
+
+		// Whatever comes back has to fit the inode it came from. More than
+		// that would mean the length was taken from the claimed size rather
+		// than from the inode.
+		if max := maxInlineDataSize(len(raw), inode.ExtraISize); len(data) > max {
+			t.Fatalf("returned %d bytes from a %d byte inode holding at most %d (err=%v)",
+				len(data), len(raw), max, err)
+		}
+	})
+}
+
 func FuzzParseJournal(f *testing.F) {
 	f.Add(jbd2Superblock(4, 2, 0))
 	f.Add(jbd2Descriptor(2, []uint64{100, 200}))
@@ -252,6 +301,31 @@ func TestCraftedGeometryDoesNotAllocate(t *testing.T) {
 
 	if err := <-done; err == nil {
 		t.Fatal("Open accepted a superblock describing 2^42 groups")
+	}
+}
+
+// TestUninitBitmapAllocationIsBounded is PAR-35's mistake in another place: a
+// group's bitmap was sized from s_blocks_per_group, which the superblock only
+// checks non-zero. A bitmap occupies at most one block, which is the clamp the
+// read path already applied; the uninitialised path did not, so a crafted
+// superblock could ask for up to 512 MiB per group before reading anything.
+func TestUninitBitmapAllocationIsBounded(t *testing.T) {
+	cfg := defaultSBConfig()
+	cfg.blocksPerGroup = 1 << 20 // 128 KiB of bitmap; the field permits 512 MiB
+	img := buildTestImage(t, cfg)
+
+	// BLOCK_UNINIT is the path that allocates without reading a block first.
+	binary.LittleEndian.PutUint16(img[testGroupDescOffset+GdOffFlags:], GroupBlockUninit)
+
+	fs := openFixture(t, img, Options{})
+
+	bitmap, err := fs.BlockBitmap(0)
+	if err != nil {
+		t.Fatalf("BlockBitmap: %v", err)
+	}
+	if max := int(fs.Superblock().BlockSize); len(bitmap) > max {
+		t.Errorf("uninitialised block bitmap is %d bytes; one bitmap occupies at most %d",
+			len(bitmap), max)
 	}
 }
 

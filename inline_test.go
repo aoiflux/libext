@@ -3,6 +3,8 @@ package libext
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"io"
 	"testing"
 )
 
@@ -297,5 +299,206 @@ func TestReadFileReturnsInlineContent(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Errorf("ReadFile = %q, want %q", got, content)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PAR-35: the claimed size is bounded by the inode's own capacity
+// ---------------------------------------------------------------------------
+
+func TestInlineSizeBoundIsNotTooTight(t *testing.T) {
+	// The bound is the inode's own capacity: the 60-byte block-pointer area
+	// plus the xattr space after the fixed fields and the extra area, which is
+	// where system.data lives. A 256-byte inode with i_extra_isize 32 holds at
+	// most 156 bytes. Pinned from both sides, so the guard cannot drift tight
+	// and start refusing inodes a real filesystem writes.
+	const maxForFixture = inlineDataInBlock + (256 - GoodOldInodeSize - 32)
+	if maxForFixture != 156 {
+		t.Fatalf("fixture arithmetic changed: max = %d, want 156", maxForFixture)
+	}
+
+	for _, tc := range []struct {
+		size    uint32
+		wantErr bool
+	}{
+		{maxForFixture, false},
+		{maxForFixture + 1, true},
+	} {
+		raw := buildInodeWithXAttrs(t, ModeRegular|0o644, tc.size,
+			InodeFlagInlineData, bytes.Repeat([]byte("A"), inlineDataInBlock), nil)
+		inode := parseInode(raw, 14)
+
+		_, err := (&FS{}).inlineDataFromRaw(inode, raw)
+		switch {
+		case tc.wantErr && err == nil:
+			t.Errorf("size %d was accepted; a 256-byte inode cannot hold it", tc.size)
+		case tc.wantErr && !errors.Is(err, ErrUnsupportedLayout):
+			t.Errorf("size %d: error = %v, want one wrapping ErrUnsupportedLayout", tc.size, err)
+		case !tc.wantErr && err != nil:
+			t.Errorf("size %d was refused (%v), want accepted", tc.size, err)
+		}
+	}
+}
+
+func TestInlineDataAtMaximumStoredSizeStillReads(t *testing.T) {
+	// The largest inline file a 256-byte inode can really store: 60 bytes in
+	// the block-pointer area plus the largest system.data value that fits the
+	// 96-byte xattr area after its 4-byte magic, its 20-byte entry and the
+	// 4-byte terminator.
+	const tailLen = 68
+	head := bytes.Repeat([]byte("H"), inlineDataInBlock)
+	tail := bytes.Repeat([]byte("T"), tailLen)
+	full := append(append([]byte{}, head...), tail...)
+
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, uint32(len(full)),
+		InodeFlagInlineData, head, []inodeXAttr{
+			{index: xattrIndexSystem, name: inlineDataAttrName, value: tail},
+		})
+
+	inode := parseInode(raw, 40)
+	got, err := (&FS{}).inlineDataFromRaw(inode, raw)
+	if err != nil {
+		t.Fatalf("inlineDataFromRaw refused the largest inline file a 256-byte inode holds: %v", err)
+	}
+	if !bytes.Equal(got, full) {
+		t.Errorf("inline data = %q (%d bytes), want %d bytes", got, len(got), len(full))
+	}
+
+	// And through the whole-file read path, on an image whose inodes are 256
+	// bytes, so the xattr area the overflow lives in exists on disk too.
+	img := buildExt4Image(t)
+	writeRawInode(img, 256, 40, raw)
+	fs := openFixture(t, img, Options{})
+
+	whole, err := fs.ReadFile(40)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(whole, full) {
+		t.Errorf("ReadFile returned %d bytes, want %d", len(whole), len(full))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EXT-U1: the streaming read path must serve an inline inode too
+// ---------------------------------------------------------------------------
+
+// assertReadAtMatches reads f in pieces at varied offsets and requires every
+// piece to equal the same slice of want.
+//
+// The piece sizes straddle the structures involved: 1 and 7 bytes land inside
+// the block-pointer area, 60 is exactly that area, and 4096 asks for more than
+// any inline inode holds.
+func assertReadAtMatches(t *testing.T, f *File, want []byte) {
+	t.Helper()
+	for _, size := range []int{1, 7, 60, 4096} {
+		for _, off := range []int{0, 1, 13, len(want) - 1} {
+			if off < 0 || off >= len(want) {
+				continue
+			}
+			buf := make([]byte, size)
+			n, err := f.ReadAt(buf, int64(off))
+			if err != nil && err != io.EOF {
+				t.Fatalf("ReadAt(%d bytes at %d): %v", size, off, err)
+			}
+			exp := want[off:]
+			if len(exp) > size {
+				exp = exp[:size]
+			}
+			if !bytes.Equal(buf[:n], exp) {
+				t.Errorf("ReadAt(%d bytes at %d) = %q, want %q", size, off, buf[:n], exp)
+			}
+		}
+	}
+}
+
+func TestReadAtServesInlineContent(t *testing.T) {
+	// An inline inode owns no blocks, so a block-mapped read maps nothing and
+	// fills the range with zeros. That is a wrong answer rather than an error,
+	// and ReadFile on the same inode returns the right bytes.
+	img := buildTestImage(t, defaultSBConfig())
+	content := bytes.Repeat([]byte("inline-"), 9)[:inlineDataInBlock]
+	writeTestInode(img, 40, ModeRegular|0o644, uint32(len(content)),
+		InodeFlagInlineData, content)
+
+	fs := openFixture(t, img, Options{})
+
+	whole, err := fs.ReadFile(40)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(whole, content) {
+		t.Fatalf("ReadFile = %q, want %q", whole, content)
+	}
+
+	f, err := fs.Open(40)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	assertReadAtMatches(t, f, whole)
+}
+
+func TestReadAtServesInlineOverflowContent(t *testing.T) {
+	// The seam between i_block and system.data is where a reader serving
+	// ReadAt from only the first 60 bytes would still be wrong.
+	const tailLen = 68
+	head := bytes.Repeat([]byte("H"), inlineDataInBlock)
+	tail := bytes.Repeat([]byte("T"), tailLen)
+	full := append(append([]byte{}, head...), tail...)
+
+	raw := buildInodeWithXAttrs(t, ModeRegular|0o644, uint32(len(full)),
+		InodeFlagInlineData, head, []inodeXAttr{
+			{index: xattrIndexSystem, name: inlineDataAttrName, value: tail},
+		})
+
+	img := buildExt4Image(t)
+	writeRawInode(img, 256, 40, raw)
+	fs := openFixture(t, img, Options{})
+
+	f, err := fs.Open(40)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	assertReadAtMatches(t, f, full)
+}
+
+func TestReadServesInlineContent(t *testing.T) {
+	// Read routes through ReadAt, so it carried the same bug.
+	img := buildTestImage(t, defaultSBConfig())
+	content := []byte("inline file body")
+	writeTestInode(img, 40, ModeRegular|0o644, uint32(len(content)),
+		InodeFlagInlineData, content)
+
+	f, err := openFixture(t, img, Options{}).Open(40)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("io.ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("sequential Read = %q, want %q", got, content)
+	}
+}
+
+func TestReadAtPastEndOfInlineFileReturnsEOF(t *testing.T) {
+	img := buildTestImage(t, defaultSBConfig())
+	content := []byte("inline file body")
+	writeTestInode(img, 40, ModeRegular|0o644, uint32(len(content)),
+		InodeFlagInlineData, content)
+
+	f, err := openFixture(t, img, Options{}).Open(40)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	for _, off := range []int64{int64(len(content)), int64(len(content)) + 1, 1 << 20} {
+		buf := make([]byte, 4)
+		n, err := f.ReadAt(buf, off)
+		if n != 0 || err != io.EOF {
+			t.Errorf("ReadAt at %d = (%d, %v), want (0, io.EOF)", off, n, err)
+		}
 	}
 }

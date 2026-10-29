@@ -49,33 +49,65 @@ func (fs *FS) InlineData(inodeNum uint32) ([]byte, bool, error) {
 	return data, true, err
 }
 
+// maxInlineDataSize is the most inline data an inode of this size can hold:
+// the 60-byte block-pointer area plus the xattr space after the fixed fields
+// and the extra area, which is where system.data lives.
+//
+// The kernel's ext4_get_max_inline_size measures the real free space in that
+// area (fs/ext4/inline.c), so this is an upper bound on it rather than the
+// exact figure - loose enough that no inode a real filesystem writes is
+// refused, tight enough that a claim can never exceed one inode.
+func maxInlineDataSize(inodeSize int, extraISize uint16) int {
+	xattrSpace := inodeSize - GoodOldInodeSize - int(extraISize)
+	if xattrSpace < 0 {
+		xattrSpace = 0
+	}
+	return inlineDataInBlock + xattrSpace
+}
+
 // inlineDataFromRaw assembles inline contents from an already-read inode.
 func (fs *FS) inlineDataFromRaw(inode Inode, raw []byte) ([]byte, error) {
-	out := make([]byte, 0, inode.Size)
+	// Size is read from the inode and nothing else on this path bounds it: the
+	// whole-file limit in readInodeDataMapped is applied after the inline
+	// branch, not before it. Inline data lives inside the inode, so the
+	// inode's own capacity is the bound. Without it one flipped bit in
+	// i_size_high asks for hundreds of gigabytes here, and an allocation that
+	// large ends the process with an out-of-memory no recover can catch.
+	// loadGroupDescriptors bounds its own prealloc for the same reason.
+	maxInline := maxInlineDataSize(len(raw), inode.ExtraISize)
+	if inode.Size > uint64(maxInline) {
+		return nil, fmt.Errorf("%w: inode %d claims %d bytes of inline data; an inode of %d bytes holds at most %d",
+			ErrUnsupportedLayout, inode.Number, inode.Size, len(raw), maxInline)
+	}
 
 	head := inode.BlockRaw[:]
 	if inode.Size < uint64(len(head)) {
 		head = head[:inode.Size]
 	}
-	out = append(out, head...)
 
 	if inode.Size <= inlineDataInBlock {
-		return out, nil
+		return append([]byte(nil), head...), nil
 	}
 
 	// The remainder lives in system.data. Without it the file silently
 	// truncates to 60 bytes rather than failing.
 	attrs, err := parseInodeXAttrs(raw, inode.ExtraISize)
 	if err != nil {
-		return out, fmt.Errorf("inode %d inline overflow: %w", inode.Number, err)
+		return append([]byte(nil), head...), fmt.Errorf("inode %d inline overflow: %w", inode.Number, err)
 	}
+	var tail []byte
 	for _, a := range attrs {
 		if a.index == xattrIndexSystem && a.name == inlineDataAttrName {
-			out = append(out, a.value...)
+			tail = a.value
 			break
 		}
 	}
 
+	// Sized from the bytes actually present rather than from the bytes
+	// claimed, then cut to Size as before.
+	out := make([]byte, 0, len(head)+len(tail))
+	out = append(out, head...)
+	out = append(out, tail...)
 	if uint64(len(out)) > inode.Size {
 		out = out[:inode.Size]
 	}
